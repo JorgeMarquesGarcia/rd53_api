@@ -40,8 +40,8 @@ class Terminal:
         self._proc: subprocess.Popen | None = None
 
         self.default_scan_end_patterns = [
-            r'>>> Interfaces Destroyed <<<',
-            r'@@@ End of CMIST miniDAQ @@@',
+            r'>>> Interfaces\s+destroyed <<<',
+            r'@@@ End of CMSIT miniDAQ @@@',
         ]
 
         if verbose:

@@ -21,11 +21,10 @@ SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 # Geometría del detector
 # ---------------------------------------------------------------------------
 DETECTOR_LAYOUT = {
-    0: {"label": "Layer 0  (Z=0)",  "hybrid": 0, "chips": [0],       "single": True},
-    1: {"label": "Layer 1  (Z=1)",  "hybrid": 1, "chips": [0,1,2,3], "single": False},
-    2: {"label": "Layer 2  (Z=2)",  "hybrid": 2, "chips": [0,1,2,3], "single": False},
+    0: {"label": "Layer 0  (Z=0)",  "hybrid": 0, "chips": [0],       "rd53_offset": 0, "single": True},
+    1: {"label": "Layer 1  (Z=1)",  "hybrid": 1, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
+    2: {"label": "Layer 2  (Z=2)",  "hybrid": 2, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
 }
-
 
 class ConfigTab(QWidget):
     """Tab de configuración: detector activo + paths del sistema."""
@@ -216,10 +215,14 @@ class ConfigTab(QWidget):
 
         active_hybrids = set()
         active_chips   = []
-        for (hybrid_id, chip_id), cb in self._chip_checks.items():
-            if cb.isChecked():
-                active_hybrids.add(hybrid_id)
-                active_chips.append(chip_id)
+        for layer_info in DETECTOR_LAYOUT.values():
+            offset = layer_info["rd53_offset"]
+            for chip_id in layer_info["chips"]:
+                key = (layer_info["hybrid"], chip_id)
+                cb = self._chip_checks.get(key)
+                if cb and cb.isChecked():
+                    active_hybrids.add(layer_info["hybrid"])
+                    active_chips.append(chip_id + offset)
 
         if not active_chips:
             errors.append("At least one chip must be active.")
