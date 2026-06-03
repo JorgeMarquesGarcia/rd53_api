@@ -335,9 +335,9 @@ def run_complete_cycle():
     """)
     
     # Imports reales
-    from rd53_api.config.system_config import SystemConfig
-    from rd53_api.workflow.system_state import SystemState
-    from rd53_api.workflow.system_state import TransitionConditionNotMetError
+    from src.config.system_config import SystemConfig
+    from src.workflow.system_state import SystemState
+    from src.workflow.system_state import TransitionConditionNotMetError
     
     # =========================================================================
     # PASO 1: ESTADO INICIAL (IDLE)
@@ -549,11 +549,11 @@ def run_complete_cycle():
     
     print_code("""
 # Ejecutar análisis de ruido manualmente
-from rd53_api.analysis.analysis_noise import NoiseAnalysis
+from src.analysis.analysis_noise import NoiseAnalysis
 noise_analysis = NoiseAnalysis(root_manager)
 """)
     
-    from rd53_api.analysis.analysis_noise import NoiseAnalysis
+    from src.analysis.analysis_noise import NoiseAnalysis
     noise_analysis = NoiseAnalysis(root_manager)
     
     n_noisy = len(noise_analysis.noisy_pixels) if noise_analysis.noisy_pixels else 0
@@ -664,12 +664,12 @@ noise_analysis = NoiseAnalysis(root_manager)
         EN UN SISTEMA REAL:
         
         # Configurar adquisición
-        from rd53_api.acquisition.maps import PhysicsMap
+        from src.acquisition.maps import PhysicsMap
         phys_map = PhysicsMap()
         phys_map.set_param("TRIGGER_MODE", "external")
         
         # Ejecutar adquisición
-        from rd53_api.acquisition.scans import PhysicsRun
+        from src.acquisition.scans import PhysicsRun
         run = PhysicsRun(phys_map, n_events=10000)
         run.start()  # Genera Run000013_Physics.root
         """)

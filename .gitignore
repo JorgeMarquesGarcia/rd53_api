@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.vscode/
+DockerOLD1/
+DockerOld.txt
+Ph2_ACF/
+Pictures/
+RD53_analysis/
+ReDocker/
+ReDocker.zip
+ConfigurarQt.txt
+convertir ui en py.txt
+guidelines.txt
+scp.txt
+config.xlaunch
+Dockerfile
+requirements.txt
+run_linux.sh
+run_windows.bat

@@ -1,6 +1,6 @@
 from __future__ import annotations
-from rd53_api.calibration.maps import ThresholdMinimizationMap
-from rd53_api.calibration.scans.calibration_scan import CalibrationScan
+from src.calibration.maps import ThresholdMinimizationMap
+from src.calibration.scans.calibration_scan import CalibrationScan
 
 
 class ThresholdMinimizationScan(CalibrationScan):

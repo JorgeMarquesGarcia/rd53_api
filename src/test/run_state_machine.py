@@ -14,11 +14,11 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.config.acquisition_config import AcquisitionConfig
-from rd53_api.acquisition.scans.physics import PhysicsScan
-from rd53_api.workflow.state_orchestrator import StateOrchestrator
-from rd53_api.workflow.system_state import SystemState
+from src.config.system_config import SystemConfig
+from src.config.acquisition_config import AcquisitionConfig
+from src.acquisition.scans.physics import PhysicsScan
+from src.workflow.state_orchestrator import StateOrchestrator
+from src.workflow.system_state import SystemState
 
 
 # ============================================================================

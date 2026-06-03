@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Callable
 import logging
 
-from rd53_api.workflow.system_state import (
+from src.workflow.system_state import (
     SystemState,
     TransitionRule,
     TRANSITION_RULES,
@@ -12,9 +12,9 @@ from rd53_api.workflow.system_state import (
     InvalidStateError,
     SystemNotConfiguredError,
 )
-from rd53_api.config.xml.xml_manager import XmlManager
-from rd53_api.config.txt.txt_manager import TxtManager
-from rd53_api.config.root.root_manager import RootManager
+from src.config.xml.xml_manager import XmlManager
+from src.config.txt.txt_manager import TxtManager
+from src.config.root.root_manager import RootManager
 
 
 class SystemConfig:

@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 import uproot
 import logging
-from rd53_api.config.base_config_manager import BaseConfigManager
-from rd53_api.core.exceptions import RootFileNotFoundError
+from src.config.base_config_manager import BaseConfigManager
+from src.core.exceptions import RootFileNotFoundError
 """Este fichero simplemente tiene que acceder al fichero .root y extraer los los datos ahí guardados, vamos un poco lo que hace el awa.py de src.
 creo que los voy a sacar n awkwards y mandarlos luego al de analisis aunque no estou muy seguro de si convertirlos a df o listas. 
 Yo creo que simplemente con extraer los datos es suficiente, mandando uno de hits y otro de todos los datos. 

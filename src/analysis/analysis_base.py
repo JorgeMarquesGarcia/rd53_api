@@ -2,8 +2,8 @@ from __future__ import annotations
 from abc import ABC
 import logging
 import awkward as ak
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.core.exceptions import AnalysisError
+from src.config.root.root_manager import RootManager
+from src.core.exceptions import AnalysisError
 
 
 """Análisis base para datos ROOT del detector RD53.

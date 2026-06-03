@@ -2,9 +2,9 @@ from __future__ import annotations
 import logging
 import awkward as ak
 
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.analysis.analysis_base import BaseAnalysis
-from rd53_api.core.exceptions import NAErrorNoHits
+from src.config.root.root_manager import RootManager
+from src.analysis.analysis_base import BaseAnalysis
+from src.core.exceptions import NAErrorNoHits
 
 SENSOR_ROWS = 192
 SENSOR_COLS = 400

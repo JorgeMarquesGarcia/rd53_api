@@ -1,8 +1,8 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Union, Optional
-from rd53_api.config.xml.xml_manager import XmlManager
-from rd53_api.config.system_config import SystemConfig
+from src.config.xml.xml_manager import XmlManager
+from src.config.system_config import SystemConfig
 
 
 class AnalysisConfig:

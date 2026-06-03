@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from matplotlib.axes import Axes
-from rd53_api.plotter.plotter_base import PlotterBase
+from src.plotter.plotter_base import PlotterBase
 import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
-from rd53_api.config.system_config import SystemConfig
+from src.config.system_config import SystemConfig
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 

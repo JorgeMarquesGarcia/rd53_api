@@ -10,8 +10,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from rd53_api.remote.terminal import Terminal
-from rd53_api.core.exceptions import TerminalCommandError
+from src.remote.terminal import Terminal
+from src.core.exceptions import TerminalCommandError
 
 
 
@@ -67,7 +67,7 @@ def main():
     # Método 3: Captura de errores de terminal
     print("Este test demuestra cómo capturar errores específicos detectados en el output")
     print("Patrones de error configurados:")
-    from rd53_api.remote.terminal import TERMINAL_ERROR_PATTERNS
+    from src.remote.terminal import TERMINAL_ERROR_PATTERNS
     for pattern, (code, msg) in TERMINAL_ERROR_PATTERNS.items():
         print(f"  • {code}: {msg}")
     

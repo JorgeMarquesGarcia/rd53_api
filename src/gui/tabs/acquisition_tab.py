@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont
 
-from rd53_api.config.system_config import SystemConfig
+from src.config.system_config import SystemConfig
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ class AcquisitionTab(QWidget):
     def _show_trajectories(self):
         """Lanza el CoincidencePlotter con los datos de la última adquisición."""
         try:
-            from rd53_api.plotter.plotter_trajectory import CoincidencePlotter
+            from src.plotter.plotter_trajectory import CoincidencePlotter
             # TODO: sustituir plot_data por los datos reales del análisis
             # result = AnalysisRunner.run(...)
             # plotter = CoincidencePlotter(result.plot_coord_data,

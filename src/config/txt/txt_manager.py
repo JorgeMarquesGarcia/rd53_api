@@ -1,13 +1,13 @@
 from __future__ import annotations
 from pathlib import Path
 import logging
-from rd53_api.core.decorators import ensure_loaded
-from rd53_api.core.mask import Mask, NROWS, NCOLS
+from src.core.decorators import ensure_loaded
+from src.core.mask import Mask, NROWS, NCOLS
 from enum import Enum, auto
 from datetime import datetime
 
-from rd53_api.core import exceptions
-from rd53_api.config.base_config_manager import BaseConfigManager
+from src.core import exceptions
+from src.config.base_config_manager import BaseConfigManager
 
 class SaveMode(Enum):
     TIMESTAMP = auto()

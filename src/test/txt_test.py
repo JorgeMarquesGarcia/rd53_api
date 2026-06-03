@@ -2,7 +2,7 @@ from pathlib import Path
 import logging
 
 # Ajusta estos imports a tu estructura real
-from rd53_api.config.txt.txt_manager import TxtManager, SaveMode
+from src.config.txt.txt_manager import TxtManager, SaveMode
 
 
 

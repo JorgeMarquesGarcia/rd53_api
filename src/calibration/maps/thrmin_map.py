@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Union
-from rd53_api.chip.register_map import CalibrationSettings, FastCmdReg, ChipSettings, Value
-from rd53_api.calibration.maps.base_map import BaseCalibrationMap
+from src.chip.register_map import CalibrationSettings, FastCmdReg, ChipSettings, Value
+from src.calibration.maps.base_map import BaseCalibrationMap
 
 class ThresholdMinimizationMap(BaseCalibrationMap): 
     def __init__(self):

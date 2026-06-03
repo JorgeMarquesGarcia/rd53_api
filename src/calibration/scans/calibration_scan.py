@@ -1,9 +1,9 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from rd53_api.remote.terminal import Terminal
-from rd53_api.calibration.maps import CalibrationMap
-from rd53_api.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
-from rd53_api.config.system_config import SystemConfig
+from src.remote.terminal import Terminal
+from src.calibration.maps import CalibrationMap
+from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
+from src.config.system_config import SystemConfig
 
 
 class CalibrationScan(ABC):

@@ -1,6 +1,6 @@
 from __future__ import annotations
-from rd53_api.calibration.maps import SCurveMap
-from rd53_api.calibration.scans.calibration_scan import CalibrationScan
+from src.calibration.maps import SCurveMap
+from src.calibration.scans.calibration_scan import CalibrationScan
 
 
 class SCurveScan(CalibrationScan):

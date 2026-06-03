@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.analysis.analysis_noise import NoiseAnalysis
+from src.config.root.root_manager import RootManager
+from src.analysis.analysis_noise import NoiseAnalysis
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 

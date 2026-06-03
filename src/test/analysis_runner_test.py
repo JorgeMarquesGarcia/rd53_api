@@ -13,10 +13,10 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import awkward as ak
 
-from rd53_api.analysis.analysis_runner import AnalysisRunner, AnalysisResult
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.workflow.system_state import SystemState
-from rd53_api.core.exceptions import AnalysisError
+from src.analysis.analysis_runner import AnalysisRunner, AnalysisResult
+from src.config.system_config import SystemConfig
+from src.workflow.system_state import SystemState
+from src.core.exceptions import AnalysisError
 
 
 class FakeRootManager:

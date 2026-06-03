@@ -14,8 +14,8 @@ import unittest
 import tempfile
 from pathlib import Path
 
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.workflow.system_state import (
+from src.config.system_config import SystemConfig
+from src.workflow.system_state import (
     SystemState,
     TRANSITION_RULES,
     InvalidStateTransitionError,
@@ -197,7 +197,7 @@ class TestSystemConfigSetup(unittest.TestCase):
         import shutil
         SystemConfig.reset()
         # Reset conditions in TRANSITION_RULES
-        from rd53_api.workflow.system_state import TransitionRule
+        from src.workflow.system_state import TransitionRule
         TRANSITION_RULES[(SystemState.ANALYSIS, SystemState.ACQUISITION)] = TransitionRule(
             required_config=["xml_path", "ph2_acf_dir"],
             condition=None,

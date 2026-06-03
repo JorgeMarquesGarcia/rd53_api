@@ -2,13 +2,13 @@
 app.py - Entry point de la GUI RD53A.
 
 Uso:
-    python3 -m rd53_api.gui.app
+    python3 -m src.gui.app
 """
 import sys
 import logging
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
-from rd53_api.gui.main_window import MainWindow
+from src.gui.main_window import MainWindow
 
 logging.basicConfig(
     level=logging.INFO,

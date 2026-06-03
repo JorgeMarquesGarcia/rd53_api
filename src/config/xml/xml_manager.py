@@ -4,10 +4,10 @@ from pathlib import Path
 import logging
 from xml.etree import ElementTree as ET
 
-from rd53_api.core import exceptions
-from rd53_api.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
-from rd53_api.core.decorators import ensure_loaded
-from rd53_api.config.base_config_manager import BaseConfigManager
+from src.core import exceptions
+from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
+from src.core.decorators import ensure_loaded
+from src.config.base_config_manager import BaseConfigManager
 
 
 

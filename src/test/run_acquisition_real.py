@@ -13,8 +13,8 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from rd53_api.config.acquisition_config import AcquisitionConfig
-from rd53_api.acquisition.scans.physics import PhysicsScan
+from src.config.acquisition_config import AcquisitionConfig
+from src.acquisition.scans.physics import PhysicsScan
 
 
 # ============================================================================

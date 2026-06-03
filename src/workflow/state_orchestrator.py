@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from typing import Callable, Any, Optional
 import logging
 
-from rd53_api.analysis.analysis_hit import HitAnalysis
-from rd53_api.analysis.analysis_noise import NoiseAnalysis
-from rd53_api.calibration.scans.noise import NoiseScan
-from rd53_api.calibration.scans.scurve import SCurveScan
-from rd53_api.calibration.scans.threqu import ThresholdEqualizationScan
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.workflow.system_state import SystemState
-from rd53_api.results.orchestration_result import OrchestrationResult
+from src.analysis.analysis_hit import HitAnalysis
+from src.analysis.analysis_noise import NoiseAnalysis
+from src.calibration.scans.noise import NoiseScan
+from src.calibration.scans.scurve import SCurveScan
+from src.calibration.scans.threqu import ThresholdEqualizationScan
+from src.config.system_config import SystemConfig
+from src.workflow.system_state import SystemState
+from src.results.orchestration_result import OrchestrationResult
 
 
 @dataclass

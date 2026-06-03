@@ -1,10 +1,10 @@
 import logging
 logging.basicConfig(level=logging.DEBUG)
 
-from rd53_api.analysis.analysis_hit import HitAnalysis
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.plotter.plotter_trajectory import CoincidencePlotter
-from rd53_api.plotter.trajectory_interactive import InteractiveCoincidencePlotter, InteractiveTrajectoryPlotter
+from src.analysis.analysis_hit import HitAnalysis
+from src.config.root.root_manager import RootManager
+from src.plotter.plotter_trajectory import CoincidencePlotter
+from src.plotter.trajectory_interactive import InteractiveCoincidencePlotter, InteractiveTrajectoryPlotter
 
 from pathlib import Path
 

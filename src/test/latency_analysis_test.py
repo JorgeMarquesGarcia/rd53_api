@@ -1,9 +1,9 @@
 from __future__ import annotations
 import logging
-from rd53_api.analysis.analysis_latency import LatencyAnalysis
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.config.xml.xml_manager import XmlManager
-from rd53_api.chip.register_map import ChipSettings, CalibrationSettings
+from src.analysis.analysis_latency import LatencyAnalysis
+from src.config.root.root_manager import RootManager
+from src.config.xml.xml_manager import XmlManager
+from src.chip.register_map import ChipSettings, CalibrationSettings
 FILES_PATH = "/app/RD53_analysis/Data/ALL/20260211"
 xml_file = FILES_PATH + "/Run000554_CMSIT_RD53A_SQQ.xml"
 root_file = FILES_PATH + "/Run000554_Physics_Board000.root"

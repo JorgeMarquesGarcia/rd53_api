@@ -10,7 +10,7 @@ Verifica:
 from __future__ import annotations
 import unittest
 
-from rd53_api.workflow.system_state import (
+from src.workflow.system_state import (
     SystemState,
     TransitionRule,
     TRANSITION_RULES,

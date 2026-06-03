@@ -2,13 +2,13 @@ from __future__ import annotations
 import logging
 
 
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.workflow.system_state import SystemState
-from rd53_api.core.exceptions import AnalysisError
-from rd53_api.analysis.analysis_noise import NoiseAnalysis
-from rd53_api.analysis.analysis_hit import HitAnalysis
-from rd53_api.results.analysis_result import AnalysisResult
+from src.config.root.root_manager import RootManager
+from src.config.system_config import SystemConfig
+from src.workflow.system_state import SystemState
+from src.core.exceptions import AnalysisError
+from src.analysis.analysis_noise import NoiseAnalysis
+from src.analysis.analysis_hit import HitAnalysis
+from src.results.analysis_result import AnalysisResult
 
 
 

@@ -5,7 +5,7 @@ import re
 import signal
 import os
 from typing import Callable
-from rd53_api.core.exceptions import TerminalTimeOutError, TerminalCommandError
+from src.core.exceptions import TerminalTimeOutError, TerminalCommandError
 
 logger = logging.getLogger(__name__)
 logger.propagate = True

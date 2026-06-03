@@ -61,16 +61,16 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-from rd53_api.plotter.plotter_base import PlotterBase, ANALYSIS_PLOTS
-from rd53_api.plotter.heatmap import (
+from src.plotter.plotter_base import PlotterBase, ANALYSIS_PLOTS
+from src.plotter.heatmap import (
     PixelAlivePlotter, ToT2DPlotter, Threshold2DPlotter,
     Noise2DPlotter, TDAC2DPlotter, Masked2DPlotter,
 )
-from rd53_api.plotter.histogram1d import (
+from src.plotter.histogram1d import (
     Threshold1DPlotter, Noise1DPlotter, Occ1DPlotter,
     ToT1DPlotter, TDAC1DPlotter, ThrEqualizationPlotter,
 )
-from rd53_api.plotter.scurve import SCurvePlotter
+from src.plotter.scurve import SCurvePlotter
 
 
 def build_canvas_path(chip_dir: str, canvas_name: str) -> str:

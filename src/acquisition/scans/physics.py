@@ -1,6 +1,6 @@
 from __future__ import annotations
-from rd53_api.acquisition.maps import PhysicsMap
-from rd53_api.acquisition.scans.acquisition_scan import AcquisitionScan
+from src.acquisition.maps import PhysicsMap
+from src.acquisition.scans.acquisition_scan import AcquisitionScan
 
 class PhysicsScan(AcquisitionScan):
     """

@@ -1,5 +1,5 @@
-from rd53_api.config.xml.xml_manager import XmlManager
-from rd53_api.chip.register_map import FastCmdReg, ChipSettings, CalibrationSettings
+from src.config.xml.xml_manager import XmlManager
+from src.chip.register_map import FastCmdReg, ChipSettings, CalibrationSettings
 
 # Carga del XML de ejemplo
 xml_file = r"C:\Users\jmarques\Containers\RD53\RD53_analysis\Data\ALL\20251218\Run000374_CMSIT_RD53A_SQ.xml"

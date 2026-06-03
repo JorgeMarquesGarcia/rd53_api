@@ -10,26 +10,26 @@ from PyQt5.QtWidgets import (
 )
 
 from pathlib import Path
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.calibration.scans.scurve      import SCurveScan
-from rd53_api.calibration.scans.threqu      import ThresholdEqualizationScan
-from rd53_api.calibration.scans.noise       import NoiseScan
-from rd53_api.calibration.scans.pixel_alive import PixelAliveScan
-import rd53_api.core.num_manager as num_mgr
+from src.config.system_config import SystemConfig
+from src.calibration.scans.scurve      import SCurveScan
+from src.calibration.scans.threqu      import ThresholdEqualizationScan
+from src.calibration.scans.noise       import NoiseScan
+from src.calibration.scans.pixel_alive import PixelAliveScan
+import src.core.num_manager as num_mgr
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor
 
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.plotter.plotter_base import PlotterBase, ANALYSIS_PLOTS
-from rd53_api.plotter.heatmap import (
+from src.config.system_config import SystemConfig
+from src.plotter.plotter_base import PlotterBase, ANALYSIS_PLOTS
+from src.plotter.heatmap import (
     PixelAlivePlotter, ToT2DPlotter, TDAC2DPlotter, Masked2DPlotter
 )
-from rd53_api.plotter.histogram1d import (
+from src.plotter.histogram1d import (
     Threshold1DPlotter, Occ1DPlotter, ToT1DPlotter,
     TDAC1DPlotter, ThrEqualizationPlotter
 )
-from rd53_api.plotter.scurve import SCurvePlotter
+from src.plotter.scurve import SCurvePlotter
 
 # ---------------------------------------------------------------------------
 # Análisis disponibles

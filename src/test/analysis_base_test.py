@@ -2,10 +2,10 @@ from __future__ import annotations
 import unittest
 import awkward as ak
 
-from rd53_api.analysis.analysis_noise import NoiseAnalysis
-from rd53_api.analysis.analysis_hit import HitAnalysis
-from rd53_api.analysis.analysis_latency import LatencyAnalysis
-from rd53_api.core.exceptions import (
+from src.analysis.analysis_noise import NoiseAnalysis
+from src.analysis.analysis_hit import HitAnalysis
+from src.analysis.analysis_latency import LatencyAnalysis
+from src.core.exceptions import (
     AnalysisError,
     LAnRootError,
     LAnRootArraysError,

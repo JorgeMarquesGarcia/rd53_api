@@ -1,8 +1,8 @@
 from __future__ import annotations
 import logging
 import awkward as ak
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.analysis.analysis_base import BaseAnalysis
+from src.config.root.root_manager import RootManager
+from src.analysis.analysis_base import BaseAnalysis
 
 class NoiseAnalysis(BaseAnalysis):
     def __init__(self, root_manager: RootManager):

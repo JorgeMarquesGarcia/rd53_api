@@ -10,11 +10,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
 
-from rd53_api.config.system_config import SystemConfig
-from rd53_api.workflow.system_state import SystemState
-from rd53_api.gui.tabs.config_tab       import ConfigTab
-from rd53_api.gui.tabs.calibration_tab  import CalibrationTab
-from rd53_api.gui.tabs.acquisition_tab  import AcquisitionTab
+from src.config.system_config import SystemConfig
+from src.workflow.system_state import SystemState
+from src.gui.tabs.config_tab       import ConfigTab
+from src.gui.tabs.calibration_tab  import CalibrationTab
+from src.gui.tabs.acquisition_tab  import AcquisitionTab
 
 # ---------------------------------------------------------------------------
 # Paleta de colores — estilo osciloscopio / industrial oscuro

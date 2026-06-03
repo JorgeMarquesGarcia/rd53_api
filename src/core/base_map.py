@@ -1,7 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Union
-from rd53_api.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
+from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
 
 
 # Type alias para el diccionario de settings

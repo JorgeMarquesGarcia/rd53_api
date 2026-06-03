@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Union
-from rd53_api.chip.register_map import CalibrationSettings, FastCmdReg, ChipSettings, Value
-from rd53_api.acquisition.maps.base_map import BaseAcquisitionMap
+from src.chip.register_map import CalibrationSettings, FastCmdReg, ChipSettings, Value
+from src.acquisition.maps.base_map import BaseAcquisitionMap
 
 
 class AcquisitionMap(BaseAcquisitionMap):

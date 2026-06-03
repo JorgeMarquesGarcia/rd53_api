@@ -1,6 +1,6 @@
 from __future__ import annotations
-from rd53_api.calibration.maps import PixelAliveMap
-from rd53_api.calibration.scans.calibration_scan import CalibrationScan
+from src.calibration.maps import PixelAliveMap
+from src.calibration.scans.calibration_scan import CalibrationScan
 
 
 class PixelAliveScan(CalibrationScan):

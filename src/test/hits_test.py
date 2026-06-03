@@ -1,7 +1,7 @@
 from matplotlib.pyplot import plot
 
-from rd53_api.analysis.analysis_hit import HitAnalysis
-from rd53_api.config.root.root_manager import RootManager
+from src.analysis.analysis_hit import HitAnalysis
+from src.config.root.root_manager import RootManager
 import awkward as ak
 import json
 

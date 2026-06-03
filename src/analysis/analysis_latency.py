@@ -3,9 +3,9 @@ import logging
 from typing import Union, Optional
 import numpy as np
 import awkward as ak
-from rd53_api.core.exceptions import LAnRootArraysError, LAErrorEmptyData, LAnRootError
-from rd53_api.config.root.root_manager import RootManager
-from rd53_api.analysis.analysis_base import BaseAnalysis
+from src.core.exceptions import LAnRootArraysError, LAErrorEmptyData, LAnRootError
+from src.config.root.root_manager import RootManager
+from src.analysis.analysis_base import BaseAnalysis
 """Podría ser interesante para el futuro, añadir alguna forma para que me diga cuantos hits se han salido del centro, porque las particulas muy energéticas caen en varios BC"""
 class LatencyAnalysis(BaseAnalysis):
     def __init__(self, root_manager: Optional[RootManager] = None, ntrig: int = 10, chip_latency: Optional[dict[str, int]] = None, new_Ntrig: Optional[int] = None):
