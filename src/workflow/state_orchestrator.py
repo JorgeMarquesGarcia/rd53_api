@@ -31,6 +31,12 @@ class StateOrchestrator:
     - Ejecutar el callback de adquisición.
     - Ejecutar análisis y actualizar contadores de píxeles ruidosos.
     - Disparar transiciones de estado según las reglas de SystemConfig.
+
+    Atributos públicos tras run() en estado ACQUISITION:
+        last_hit_analysis : HitAnalysis | None
+            Instancia del último análisis de hits ejecutado.
+            Contiene plot_coord con las trayectorias reconstruidas.
+            None si el último ciclo fue de calibración o no se ha ejecutado análisis.
     """
 
     def __init__(
@@ -43,6 +49,9 @@ class StateOrchestrator:
         self._acquisition_executor = acquisition_executor
         self._calibration_step_idx = 0
         self._last_operational_state: Optional[SystemState] = None
+
+        # Resultado del último HitAnalysis — accesible para plotters externos
+        self.last_hit_analysis: Optional[HitAnalysis] = None
 
     @staticmethod
     def _default_calibration_sequence() -> list[CalibrationStep]:
@@ -114,7 +123,6 @@ class StateOrchestrator:
         self.logger.info("Running calibration step '%s'", step.name)
         scan.run()
 
-        # scan_ended es ahora @property: True si last_scan_end_pattern is not None
         if not scan.scan_ended:
             raise RuntimeError(
                 f"Calibration step '{step.name}' finished without terminal end-flag."
@@ -151,7 +159,13 @@ class StateOrchestrator:
         root_manager.load()
 
         if self._last_operational_state == SystemState.ACQUISITION:
-            _ = HitAnalysis(root_manager)
+            self.last_hit_analysis = HitAnalysis(root_manager)
+            self.logger.info(
+                "HitAnalysis complete: %d tracks reconstructed",
+                len(self.last_hit_analysis.plot_coord),
+            )
+        else:
+            self.last_hit_analysis = None
 
         noise = NoiseAnalysis(root_manager)
         n_noisy = len(noise.noisy_pixels) if noise.noisy_pixels else 0

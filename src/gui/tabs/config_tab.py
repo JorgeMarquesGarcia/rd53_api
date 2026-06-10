@@ -14,17 +14,10 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
+from src.chip.detector_geometry import DETECTOR_LAYOUT
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 
-# ---------------------------------------------------------------------------
-# Geometría del detector
-# ---------------------------------------------------------------------------
-DETECTOR_LAYOUT = {
-    0: {"label": "Layer 0  (Z=0)",  "hybrid": 0, "chips": [0],       "rd53_offset": 0, "single": True},
-    1: {"label": "Layer 1  (Z=1)",  "hybrid": 1, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
-    2: {"label": "Layer 2  (Z=2)",  "hybrid": 2, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
-}
 
 class ConfigTab(QWidget):
     """Tab de configuración: detector activo + paths del sistema."""
@@ -71,7 +64,7 @@ class ConfigTab(QWidget):
         chips_layout = QVBoxLayout(chips_group)
         chips_layout.setSpacing(10)
 
-        for layer_id, layer_info in DETECTOR_LAYOUT.items():
+        for layer_info in DETECTOR_LAYOUT.values():
             layer_box = QGroupBox(layer_info["label"])
             layer_box.setStyleSheet("QGroupBox { color: #90A4B0; font-size: 10px; }")
             layer_layout = QHBoxLayout(layer_box)
@@ -86,7 +79,7 @@ class ConfigTab(QWidget):
             else:
                 grid = QGridLayout()
                 grid.setSpacing(8)
-                positions = {0: (1,0), 1: (1,1), 2: (0,0), 3: (0,1)}
+                positions = {0: (1, 0), 1: (1, 1), 2: (0, 0), 3: (0, 1)}
                 for chip_id in layer_info["chips"]:
                     cb = QCheckBox(f"Chip {chip_id}")
                     row, col = positions[chip_id]
@@ -140,11 +133,11 @@ class ConfigTab(QWidget):
         paths_layout.setColumnStretch(1, 1)
 
         path_defs = [
-            ("ph2_acf_dir",  "Ph2_ACF directory",    True),
-            ("xml_path",     "XML config file",       False),
-            ("root_path",    "ROOT output directory", True),
-            ("txt_base_dir", "TXT base directory",    True),
-            ("plots_dir",    "Plots output directory",True),
+            ("ph2_acf_dir",  "Ph2_ACF directory",     True),
+            ("xml_path",     "XML config file",        False),
+            ("root_path",    "ROOT output directory",  True),
+            ("txt_base_dir", "TXT base directory",     True),
+            ("plots_dir",    "Plots output directory", True),
         ]
 
         for row, (key, label, is_dir) in enumerate(path_defs):
@@ -237,8 +230,7 @@ class ConfigTab(QWidget):
             col_start, col_end = 128, 263
 
         if errors:
-            QMessageBox.warning(self, "Configuration Error",
-                                "\n\n".join(errors))
+            QMessageBox.warning(self, "Configuration Error", "\n\n".join(errors))
             return
 
         try:
@@ -255,7 +247,7 @@ class ConfigTab(QWidget):
             if plots:
                 Path(plots).mkdir(parents=True, exist_ok=True)
 
-            self._update_summary(ph2_acf, xml, col_start, col_end, active_chips)
+            self._update_summary(ph2_acf, xml, col_start, col_end)
             self.config_applied.emit()
             self.logger.info("Configuración aplicada: cols=%d-%d chips=%s",
                              col_start, col_end, active_chips)
@@ -266,7 +258,7 @@ class ConfigTab(QWidget):
             QMessageBox.critical(self, "Configuration Error", str(e))
             self.logger.error("Error aplicando configuración: %s", e)
 
-    def _update_summary(self, ph2_acf, xml, col_start, col_end, chips):
+    def _update_summary(self, ph2_acf, xml, col_start, col_end):
         active = [f"H{h}/C{c}" for (h, c), cb in self._chip_checks.items() if cb.isChecked()]
         self._summary_label.setText(
             f"Ph2_ACF:  {Path(ph2_acf).name}\n"
@@ -330,10 +322,3 @@ class ConfigTab(QWidget):
 
         except Exception as e:
             self.logger.warning("Could not load settings: %s", e)
-
-    # ------------------------------------------------------------------
-    # API pública para otros tabs
-    # ------------------------------------------------------------------
-    def get_active_chip_keys(self) -> list[tuple[int, int]]:
-        """Devuelve lista de (hybrid_id, chip_id) activos."""
-        return [(h, c) for (h, c), cb in self._chip_checks.items() if cb.isChecked()]

@@ -341,6 +341,7 @@ class CalibrationTab(QWidget):
             "threqu":     "ThrEqualization",
             "noise":      "NoiseScan",
             "pixelalive": "PixelAlive",
+            #"fine_noise": "Physics_Board000"
         }
         pattern  = pattern_map.get(analysis, "")
         run_str  = str(run_number).zfill(6)

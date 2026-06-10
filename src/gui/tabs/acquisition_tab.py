@@ -5,49 +5,86 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QGroupBox, QLabel, QPushButton, QLineEdit,
-    QFileDialog, QTextEdit, QSpinBox, QRadioButton,
+    QGroupBox, QLabel, QPushButton,
+    QTextEdit, QSpinBox, QRadioButton,
     QButtonGroup, QSpacerItem, QSizePolicy,
-    QScrollArea,
+    QScrollArea, QProgressBar,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
 
 
 # ---------------------------------------------------------------------------
-# Worker thread para adquisición
+# Workers
 # ---------------------------------------------------------------------------
-class AcquisitionWorker(QObject):
-    log_message = pyqtSignal(str)
-    finished    = pyqtSignal(bool)   # success
 
-    def __init__(self, scan_time: int):
+class TimedAcquisitionWorker(QObject):
+    """
+    Ejecuta PhysicsScan(scan_time=N) en un thread separado.
+    Redirige el stdout del DAQ al log de la GUI línea a línea.
+    """
+    log_message = pyqtSignal(str)
+    finished    = pyqtSignal(bool)   # True = scan terminó con end-pattern correcto
+
+    def __init__(self, chips: list[tuple[int, int]], scan_time: int):
         super().__init__()
+        self._chips     = chips
         self._scan_time = scan_time
-        self._abort     = False
+        self._scan      = None
 
     def run(self):
-        self.log_message.emit(f"[START] Acquisition started ({self._scan_time}s)...")
+        self.log_message.emit(
+            f"[START] Physics scan  chips={self._chips}  time={self._scan_time}s"
+        )
         try:
-            # TODO: sustituir por llamada real al PhysicsScan
-            # scan = PhysicsScan(chips=SystemConfig.get_active_chips(),
-            #                    scan_time=self._scan_time)
-            # scan.run()
-            import time
-            for i in range(self._scan_time):
-                if self._abort:
-                    self.log_message.emit("[ABORTED] Acquisition aborted.")
-                    self.finished.emit(False)
-                    return
-                time.sleep(1)
-                self.log_message.emit(f"[INFO]  {i+1}/{self._scan_time}s elapsed...")
-            self.log_message.emit("[OK]   Acquisition completed.")
-            self.finished.emit(True)
+            from src.acquisition.scans.physics import PhysicsScan
+
+            self._scan = PhysicsScan(
+                chips=self._chips,
+                scan_time=self._scan_time,
+                timeout=max(self._scan_time * 2, self._scan_time + 120),
+            )
+            self._scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
+
+            self._scan.run()
+
+            if self._scan.scan_ended:
+                self.log_message.emit("[OK]   Scan completed successfully.")
+                self.finished.emit(True)
+            else:
+                self.log_message.emit("[WARN] Scan ended without end-pattern — possible abort.")
+                self.finished.emit(False)
+
         except Exception as e:
             self.log_message.emit(f"[ERROR] {e}")
             self.finished.emit(False)
+
+    def abort(self):
+        if self._scan is not None:
+            self._scan.abort()
+
+
+class ContinuousAcquisitionWorker(QObject):
+    """Placeholder para modo continuo — lógica real pendiente."""
+    log_message = pyqtSignal(str)
+    finished    = pyqtSignal(bool)
+
+    def __init__(self, chips: list[tuple[int, int]]):
+        super().__init__()
+        self._chips = chips
+        self._abort = False
+
+    def run(self):
+        self.log_message.emit("[START] Continuous acquisition started (placeholder)...")
+        import time
+        i = 0
+        while not self._abort:
+            time.sleep(1)
+            i += 1
+            self.log_message.emit(f"[INFO]  {i}s elapsed (continuous mode)...")
+        self.log_message.emit("[STOP] Continuous acquisition stopped.")
+        self.finished.emit(True)
 
     def abort(self):
         self._abort = True
@@ -56,13 +93,15 @@ class AcquisitionWorker(QObject):
 # ---------------------------------------------------------------------------
 # AcquisitionTab
 # ---------------------------------------------------------------------------
+
 class AcquisitionTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.logger  = logging.getLogger("AcquisitionTab")
-        self._worker: AcquisitionWorker | None = None
+        self._worker = None
         self._thread: QThread | None = None
-        self._last_root_path: str | None = None  # última calibración de sesión
+        self._last_hit_analysis = None   # HitAnalysis tras el último scan timed
+        self._current_plotter   = None   # CoincidencePlotter activo
         self._build_ui()
         self.logger.info("AcquisitionTab inicializado.")
 
@@ -74,14 +113,12 @@ class AcquisitionTab(QWidget):
         main.setContentsMargins(16, 16, 16, 16)
         main.setSpacing(12)
 
-        # Columna izquierda: controles arriba + log abajo
         left_splitter = QSplitter(Qt.Vertical)
         left_splitter.addWidget(self._build_control_panel())
         left_splitter.addWidget(self._build_log_panel())
-        left_splitter.setSizes([480, 280])
+        left_splitter.setSizes([520, 280])
         left_splitter.setMaximumWidth(420)
 
-        # Splitter horizontal: izquierda | trayectorias (todo el flanco derecho)
         h_splitter = QSplitter(Qt.Horizontal)
         h_splitter.addWidget(left_splitter)
         h_splitter.addWidget(self._build_trajectory_panel())
@@ -98,56 +135,36 @@ class AcquisitionTab(QWidget):
         title.setObjectName("section_title")
         layout.addWidget(title)
 
-        # --- Calibración previa ---
-        calib_group = QGroupBox("CALIBRATION SOURCE")
-        calib_layout = QVBoxLayout(calib_group)
-        calib_layout.setSpacing(8)
+        # --- Modo ---
+        mode_group = QGroupBox("ACQUISITION MODE")
+        mode_layout = QVBoxLayout(mode_group)
+        mode_layout.setSpacing(8)
 
-        # Radio buttons
-        self._radio_last    = QRadioButton("Use last session calibration")
-        self._radio_file    = QRadioButton("Load calibration file (.root)")
-        self._radio_last.setChecked(True)
-        self._btn_group     = QButtonGroup()
-        self._btn_group.addButton(self._radio_last, 0)
-        self._btn_group.addButton(self._radio_file, 1)
-        self._btn_group.buttonClicked.connect(self._on_radio_changed)
+        self._radio_timed = QRadioButton("Timed  — acquire for N seconds, then plot")
+        self._radio_cont  = QRadioButton("Continuous  — acquire until stopped")
+        self._radio_timed.setChecked(True)
+        self._mode_group  = QButtonGroup()
+        self._mode_group.addButton(self._radio_timed, 0)
+        self._mode_group.addButton(self._radio_cont,  1)
+        self._mode_group.buttonClicked.connect(self._on_mode_changed)
 
-        calib_layout.addWidget(self._radio_last)
-        calib_layout.addWidget(self._radio_file)
+        mode_layout.addWidget(self._radio_timed)
+        mode_layout.addWidget(self._radio_cont)
+        layout.addWidget(mode_group)
 
-        # File picker (oculto por defecto)
-        file_row = QHBoxLayout()
-        self._calib_edit = QLineEdit()
-        self._calib_edit.setPlaceholderText("Select calibration .root file...")
-        self._calib_edit.setEnabled(False)
-        self._calib_browse = QPushButton("...")
-        self._calib_browse.setMaximumWidth(70)
-        self._calib_browse.setEnabled(False)
-        self._calib_browse.clicked.connect(self._browse_calib)
-        file_row.addWidget(self._calib_edit)
-        file_row.addWidget(self._calib_browse)
-        calib_layout.addLayout(file_row)
-
-        # Estado de calibración cargada
-        self._calib_status = QLabel("No calibration loaded.")
-        self._calib_status.setStyleSheet("color: #FF5252; font-size: 10px;")
-        calib_layout.addWidget(self._calib_status)
-
-        layout.addWidget(calib_group)
-
-        # --- Parámetros de adquisición ---
-        params_group = QGroupBox("ACQUISITION PARAMETERS")
+        # --- Parámetros ---
+        params_group = QGroupBox("SCAN PARAMETERS")
         params_layout = QHBoxLayout(params_group)
         params_layout.setSpacing(12)
 
-        params_layout.addWidget(QLabel("Scan time (s):"))
+        self._lbl_scan_time = QLabel("Scan time (s):")
+        params_layout.addWidget(self._lbl_scan_time)
         self._scan_time = QSpinBox()
         self._scan_time.setRange(1, 3600)
         self._scan_time.setValue(30)
         self._scan_time.setMaximumWidth(80)
         params_layout.addWidget(self._scan_time)
         params_layout.addStretch()
-
         layout.addWidget(params_group)
 
         # --- Chips activos (informativo) ---
@@ -158,14 +175,15 @@ class AcquisitionTab(QWidget):
         chips_layout.addWidget(self._chips_label)
         layout.addWidget(chips_group)
 
-        # --- Botones ---
-        self._btn_load_calib = QPushButton("LOAD CALIBRATION")
-        self._btn_load_calib.clicked.connect(self._load_calibration)
-        layout.addWidget(self._btn_load_calib)
+        # --- Progreso ---
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)   # indeterminado
+        self._progress.hide()
+        layout.addWidget(self._progress)
 
+        # --- Botones ---
         self._btn_start = QPushButton("START ACQUISITION")
         self._btn_start.setObjectName("btn_launch")
-        self._btn_start.setEnabled(False)
         self._btn_start.clicked.connect(self._start_acquisition)
         layout.addWidget(self._btn_start)
 
@@ -227,7 +245,6 @@ class AcquisitionTab(QWidget):
 
         layout.addLayout(header)
 
-        # Placeholder hasta que haya datos
         self._traj_placeholder = QLabel(
             "Particle trajectories will appear here after acquisition."
         )
@@ -237,7 +254,6 @@ class AcquisitionTab(QWidget):
         )
         layout.addWidget(self._traj_placeholder)
 
-        # Contenedor para el canvas matplotlib (se añade tras adquisición)
         self._traj_container = QScrollArea()
         self._traj_container.setWidgetResizable(True)
         self._traj_container.hide()
@@ -246,137 +262,134 @@ class AcquisitionTab(QWidget):
         return panel
 
     # ------------------------------------------------------------------
-    # Lógica
+    # Lógica de modo
     # ------------------------------------------------------------------
-    def _on_radio_changed(self, btn):
-        use_file = self._btn_group.checkedId() == 1
-        self._calib_edit.setEnabled(use_file)
-        self._calib_browse.setEnabled(use_file)
+    def _on_mode_changed(self):
+        timed = self._mode_group.checkedId() == 0
+        self._scan_time.setEnabled(timed)
+        self._lbl_scan_time.setEnabled(timed)
 
-    def _browse_calib(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select calibration ROOT file", "", "ROOT files (*.root)"
-        )
-        if path:
-            self._calib_edit.setText(path)
-
-    def _load_calibration(self):
-        """Carga la calibración seleccionada en SystemConfig."""
-        use_file = self._btn_group.checkedId() == 1
-
-        if use_file:
-            path = self._calib_edit.text().strip()
-            if not path or not Path(path).exists():
-                self._log_write("[ERROR] Calibration file not found.")
-                self._calib_status.setText("File not found.")
-                self._calib_status.setStyleSheet("color: #FF5252; font-size: 10px;")
-                return
-            self._last_root_path = path
-        else:
-            # Usar última calibración de la sesión
-            try:
-                self._last_root_path = str(SystemConfig.get_root_path())
-            except Exception:
-                self._log_write("[ERROR] No session calibration available. "
-                                "Run a calibration first or load a file.")
-                self._calib_status.setText("No session calibration available.")
-                self._calib_status.setStyleSheet("color: #FF5252; font-size: 10px;")
-                return
-
-        try:
-            SystemConfig.set_root_path(self._last_root_path)
-        except Exception as e:
-            self._log_write(f"[ERROR] {e}")
-            return
-
-        # Actualizar UI
-        fname = Path(self._last_root_path).name
-        self._calib_status.setText(f"Loaded: {fname}")
-        self._calib_status.setStyleSheet("color: #69F0AE; font-size: 10px;")
-        self._log_write(f"[OK]   Calibration loaded: {fname}")
-
-        # Actualizar chips activos
-        try:
-            active = SystemConfig.get_active_hybrids()
-            chips  = SystemConfig.get_active_chips()
-            self._chips_label.setText(
-                f"Hybrids: {active}  |  Chips: {chips}"
-            )
-            self._chips_label.setStyleSheet("color: #69F0AE; font-size: 11px;")
-        except Exception:
-            pass
-
-        self._btn_start.setEnabled(True)
-
+    # ------------------------------------------------------------------
+    # Arranque / abort
+    # ------------------------------------------------------------------
     def _start_acquisition(self):
         if self._thread and self._thread.isRunning():
             self._log_write("[WARN] Acquisition already running.")
             return
 
-        scan_time = self._scan_time.value()
-        self._log_write(f"[INFO] Starting acquisition ({scan_time}s)...")
+        chips = SystemConfig.get_active_chip_keys()
+        if not chips:
+            self._log_write("[ERROR] No active chips. Configure chips in the Config tab.")
+            return
+
+        timed = self._mode_group.checkedId() == 0
+
+        if timed:
+            self._worker = TimedAcquisitionWorker(
+                chips=chips,
+                scan_time=self._scan_time.value(),
+            )
+        else:
+            self._worker = ContinuousAcquisitionWorker(chips=chips)
+
+        self._thread = QThread()
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.log_message.connect(self._log_write)
+        self._worker.finished.connect(self._on_finished)
+
         self._btn_start.setEnabled(False)
         self._btn_abort.setEnabled(True)
         self._btn_show_traj.setEnabled(False)
         self._btn_save_traj.setEnabled(False)
-
-        self._worker = AcquisitionWorker(scan_time)
-        self._thread = QThread()
-        self._worker.moveToThread(self._thread)
-
-        self._thread.started.connect(self._worker.run)
-        self._worker.log_message.connect(self._log_write)
-        self._worker.finished.connect(self._on_finished)
+        self._progress.show()
 
         self._thread.start()
 
     def _abort(self):
         if self._worker:
             self._worker.abort()
-            self._btn_abort.setEnabled(False)
-            self._log_write("[ABORTED] Abort requested...")
+        self._btn_abort.setEnabled(False)
+        self._log_write("[ABORTED] Abort requested...")
 
     def _on_finished(self, success: bool):
+        self._progress.hide()
         self._btn_abort.setEnabled(False)
         self._btn_start.setEnabled(True)
+
         if self._thread:
             self._thread.quit()
             self._thread.wait()
-        if success:
+
+        if not success:
+            self._log_write("[DONE] Acquisition ended (no trajectories available).")
+            return
+
+        # Solo en modo timed tiene sentido ejecutar análisis automáticamente
+        if self._mode_group.checkedId() == 0:
+            self._run_analysis()
+
+    # ------------------------------------------------------------------
+    # Análisis post-scan (modo timed)
+    # ------------------------------------------------------------------
+    def _run_analysis(self):
+        """
+        Tras el scan, carga el ROOT más reciente y ejecuta HitAnalysis.
+        Habilita los botones de visualización si hay tracks.
+        """
+        self._log_write("[INFO] Running HitAnalysis on latest ROOT file...")
+        try:
+            from src.analysis.analysis_hit import HitAnalysis
+
+            root_manager = SystemConfig.create_root_manager()
+            root_manager.load()
+
+            self._last_hit_analysis = HitAnalysis(root_manager)
+            n = len(self._last_hit_analysis.plot_coord)
+            self._log_write(f"[OK]   HitAnalysis complete: {n} tracks reconstructed.")
+
+            if n == 0:
+                self._log_write("[WARN] No tracks found in this acquisition.")
+                return
+
             self._btn_show_traj.setEnabled(True)
             self._btn_save_traj.setEnabled(True)
             self._log_write("[DONE] Ready to visualize trajectories.")
 
+        except Exception as e:
+            self._log_write(f"[ERROR] Analysis failed: {e}")
+            self.logger.exception("HitAnalysis error")
+
+    # ------------------------------------------------------------------
+    # Visualización
+    # ------------------------------------------------------------------
     def _show_trajectories(self):
-        """Lanza el CoincidencePlotter con los datos de la última adquisición."""
+        if self._last_hit_analysis is None:
+            self._log_write("[WARN] No analysis data available.")
+            return
         try:
             from src.plotter.plotter_trajectory import CoincidencePlotter
-            # TODO: sustituir plot_data por los datos reales del análisis
-            # result = AnalysisRunner.run(...)
-            # plotter = CoincidencePlotter(result.plot_coord_data,
-            #                             result.active_chips)
-            active_chips = [
-                (h, c)
-                for h in SystemConfig.get_active_hybrids()
-                for c in SystemConfig.get_active_chips()
-            ]
-            plotter = CoincidencePlotter([], active_chips)
-            self._log_write("[INFO] Trajectory viewer opened.")
-            self._current_plotter = plotter  # mantener referencia
+
+            self._current_plotter = CoincidencePlotter(
+                plot_coord_data=self._last_hit_analysis.plot_coord,
+                active_chips=SystemConfig.get_active_chip_keys(),
+            )
+            self._current_plotter.plot_multiple_events()
+            self._log_write(
+                f"[INFO] Showing {len(self._last_hit_analysis.plot_coord)} trajectories."
+            )
         except Exception as e:
             self._log_write(f"[ERROR] Cannot show trajectories: {e}")
 
     def _save_trajectories(self):
-        """Guarda el plot de trayectorias."""
+        if self._current_plotter is None:
+            self._log_write("[WARN] Open the trajectory viewer first.")
+            return
         try:
-            if not hasattr(self, "_current_plotter"):
-                self._log_write("[WARN] No trajectory plot to save.")
-                return
-            output_dir = None
             try:
                 output_dir = SystemConfig.get_root_path().parent / "plots"
             except Exception:
-                pass
+                output_dir = None
             path = self._current_plotter.save(output_dir)
             self._log_write(f"[OK]   Plot saved: {path}")
         except Exception as e:
@@ -386,10 +399,10 @@ class AcquisitionTab(QWidget):
     # API pública — llamada desde MainWindow cuando se aplica config
     # ------------------------------------------------------------------
     def on_config_applied(self):
+        """Actualiza el label de chips activos cuando cambia la configuración."""
         try:
-            active = SystemConfig.get_active_hybrids()
-            chips  = SystemConfig.get_active_chips()
-            self._chips_label.setText(f"Hybrids: {active}  |  Chips: {chips}")
+            keys = SystemConfig.get_active_chip_keys()
+            self._chips_label.setText(f"Active: {keys}")
             self._chips_label.setStyleSheet("color: #69F0AE; font-size: 11px;")
         except Exception:
             pass

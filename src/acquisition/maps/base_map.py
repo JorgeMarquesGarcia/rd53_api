@@ -1,5 +1,5 @@
 from __future__ import annotations
-from rd53_api.core.base_map import BaseMap, SettingsDict
+from src.core.base_map import BaseMap, SettingsDict
 
 
 class BaseAcquisitionMap(BaseMap):

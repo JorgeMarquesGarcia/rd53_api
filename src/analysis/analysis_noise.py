@@ -34,9 +34,6 @@ class NoiseAnalysis(BaseAnalysis):
         self.logger.info(f"Filtro de ruido aplicado: {len(noisy_events)} eventos ruidosos detectados")
         return noisy_events
     
-
-
-
     
     def _multiple_hits(self, data=None):
         if data is None:
