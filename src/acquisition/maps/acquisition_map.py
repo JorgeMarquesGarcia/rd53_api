@@ -7,7 +7,7 @@ from src.acquisition.maps.base_map import BaseAcquisitionMap
 class AcquisitionMap(BaseAcquisitionMap):
     def __init__(self):
         self._ntriggers = 10
-        self._save_binary = 1
+        self._save_binary = 0
         self._latency = 39
         self._injtype = 0
         self._trigger_source = 6

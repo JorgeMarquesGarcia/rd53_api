@@ -14,7 +14,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
 from src.config.system_config import SystemConfig
 
-
+"""Tengo que poder modificar el threshold desde la GUI"""
 # ---------------------------------------------------------------------------
 # Workers
 # ---------------------------------------------------------------------------
@@ -276,7 +276,9 @@ class AcquisitionTab(QWidget):
         if self._thread and self._thread.isRunning():
             self._log_write("[WARN] Acquisition already running.")
             return
-
+        
+        self._log_write(f"[DEBUG] ph2_acf_dir={SystemConfig.get_ph2_acf_dir()}")
+        self._log_write(f"[DEBUG] txt_base_dir={SystemConfig.get_txt_base_dir()}")
         chips = SystemConfig.get_active_hw_chips()
         if not chips:
             self._log_write("[ERROR] No active chips. Configure chips in the Config tab.")

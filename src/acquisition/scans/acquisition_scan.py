@@ -22,6 +22,8 @@ class AcquisitionScan(ABC):
         sys_config = SystemConfig()
         self.ph2_acf_dir = str(sys_config.get_ph2_acf_dir())
         self.xml = sys_config.create_xml_manager()
+        self.txt_dir = str(sys_config.get_txt_base_dir())
+
 
     @abstractmethod
     def get_map(self):
@@ -42,42 +44,38 @@ class AcquisitionScan(ABC):
 
     def _acq_setup_xml(self):
         acp_map = AcquisitionMap()
-        for key, value in acp_map.to_dict().items():
-            try:
-                if isinstance(key, CalibrationSettings):
-                    self._apply_setting(key, value)
-            except Exception as e:
-                self.xml.logger.warning(f"Failed to set acquisition setting '{key}' to '{value}': {str(e)}")
-
+        self._apply_map(acp_map.to_dict())
+        
         for hybrid_id, rd53_id in self.chips:
             self.xml.set_chip_enable(hybrid_id, rd53_id, True)
         self.xml.save()
 
+    
     def _setup_xml(self):
         self._acq_setup_xml()
+        self._apply_map(self.get_map().to_dict())
+        self.xml.save()
 
-        acquisition_map = self.get_map()
-
-        for key, value in acquisition_map.to_dict().items():
+    def _apply_map(self, settings: dict, hybrid_id: int | None = None, rd53_id: int | None = None):
+        """Aplica un diccionario de settings al XML, manejando los tres tipos."""
+        for key, value in settings.items():
             try:
                 if isinstance(key, CalibrationSettings):
                     self._apply_setting(key, value)
-            except Exception as e:
-                self.xml.logger.warning(f"Failed to set acquisition setting '{key}' to '{value}': {str(e)}")
-
-        for hybrid_id, rd53_id in self.chips:
-            for key, value in acquisition_map.to_dict().items():
-                try:
-                    if isinstance(key, ChipSettings):
+                elif isinstance(key, FastCmdReg):
+                    self._apply_setting(key, value)
+                elif isinstance(key, ChipSettings):
+                    if hybrid_id is not None and rd53_id is not None:
                         self._apply_setting(key, value, hybrid_id, rd53_id)
-                except Exception as e:
-                    self.xml.logger.warning(
-                        f"Failed to set chip setting '{key}' to '{value}' "
-                        f"for chip (hybrid={hybrid_id}, rd53={rd53_id}): {str(e)}"
-                    )
-
-        self.xml.save()
-
+                    else:
+                        # ChipSettings sin chip especificado → aplicar a todos los chips activos
+                        for h, r in self.chips:
+                            self._apply_setting(key, value, h, r)
+            except Exception as e:
+                self.xml.logger.warning(
+                    f"Failed to set '{key}' to '{value}': {str(e)}"
+                )
+                
     def run(self):
         self._setup_xml()
         self.last_scan_end_pattern = None
@@ -89,7 +87,7 @@ class AcquisitionScan(ABC):
 
         with Terminal(timeout=self.timeout, line_callback=line_cb) as term:
             self._terminal = term
-            output, matched_pattern = term.run_scan(cmd, cwd=self.ph2_acf_dir)
+            output, matched_pattern = term.run_scan(cmd, cwd=self.txt_dir)
             self.last_scan_end_pattern = matched_pattern
 
         return output
