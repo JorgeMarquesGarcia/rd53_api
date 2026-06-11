@@ -20,22 +20,23 @@ from src.config.system_config import SystemConfig
 # ---------------------------------------------------------------------------
 
 class TimedAcquisitionWorker(QObject):
-    """
-    Ejecuta PhysicsScan(scan_time=N) en un thread separado.
-    Redirige el stdout del DAQ al log de la GUI línea a línea.
-    """
     log_message = pyqtSignal(str)
-    finished    = pyqtSignal(bool)   # True = scan terminó con end-pattern correcto
+    finished    = pyqtSignal(bool)
 
-    def __init__(self, chips: list[tuple[int, int]], scan_time: int):
+    def __init__(self, chips: list[tuple[int, int]], scan_time: int,
+                 triggers: int = 0,
+                 vthresh_per_chip: dict[tuple[int, int], int] | None = None):
         super().__init__()
-        self._chips     = chips
-        self._scan_time = scan_time
-        self._scan      = None
+        self._chips             = chips
+        self._scan_time         = scan_time
+        self._triggers          = triggers
+        self._vthresh_per_chip  = vthresh_per_chip or {}
+        self._scan              = None
 
     def run(self):
         self.log_message.emit(
-            f"[START] Physics scan  chips={self._chips}  time={self._scan_time}s"
+            f"[START] Physics scan  chips={self._chips}  time={self._scan_time}s  "
+            f"triggers={self._triggers}  vthresh={self._vthresh_per_chip}"
         )
         try:
             from src.acquisition.scans.physics import PhysicsScan
@@ -44,9 +45,10 @@ class TimedAcquisitionWorker(QObject):
                 chips=self._chips,
                 scan_time=self._scan_time,
                 timeout=max(self._scan_time * 2, self._scan_time + 120),
+                triggers=self._triggers,
+                vthresh_per_chip=self._vthresh_per_chip,
             )
             self._scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
-
             self._scan.run()
 
             if self._scan.scan_ended:
@@ -195,7 +197,7 @@ class AcquisitionTab(QWidget):
         self._btn_abort.setEnabled(False)
         self._btn_abort.clicked.connect(self._abort)
         layout.addWidget(self._btn_abort)
-
+        layout.addWidget(self._build_physics_params_group())
         layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
         return panel
 
@@ -290,6 +292,11 @@ class AcquisitionTab(QWidget):
             self._worker = TimedAcquisitionWorker(
                 chips=chips,
                 scan_time=self._scan_time.value(),
+                triggers=self._spin_triggers.value(),
+                vthresh_per_chip={
+                    key: spin.value()
+                    for key, spin in self._vthresh_spinboxes.items()
+                },
             )
         else:
             self._worker = ContinuousAcquisitionWorker(chips=chips)
@@ -330,6 +337,74 @@ class AcquisitionTab(QWidget):
         # Solo en modo timed tiene sentido ejecutar análisis automáticamente
         if self._mode_group.checkedId() == 0:
             self._run_analysis()
+
+    def _build_physics_params_group(self) -> QGroupBox:
+        from src.chip.detector_geometry import DETECTOR_LAYOUT
+
+        group = QGroupBox("PHYSICS PARAMETERS")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        # Triggers — global
+        trig_row = QHBoxLayout()
+        trig_row.addWidget(QLabel("Triggers (global):"))
+        self._spin_triggers = QSpinBox()
+        self._spin_triggers.setRange(0, 9999)
+        self._spin_triggers.setValue(0)
+        self._spin_triggers.setToolTip("0 = unlimited triggers per event")
+        self._spin_triggers.setMaximumWidth(90)
+        trig_row.addWidget(self._spin_triggers)
+        trig_row.addStretch()
+        layout.addLayout(trig_row)
+
+        # Vthreshold_LIN — por chip activo
+        thresh_label = QLabel("Vthreshold_LIN  (per chip):")
+        thresh_label.setStyleSheet("font-size: 11px; color: #8A95A5; margin-top: 4px;")
+        layout.addWidget(thresh_label)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(130)
+        scroll.setFrameShape(scroll.NoFrame)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setSpacing(4)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._vthresh_spinboxes: dict[tuple[int, int], QSpinBox] = {}
+
+        try:
+            active_set = set(SystemConfig.get_active_hw_chips())
+            for layer in DETECTOR_LAYOUT.values():
+                hybrid = layer["hybrid"]
+                offset = layer["rd53_offset"]
+                for chip_local in layer["chips"]:
+                    rd53_hw = chip_local + offset
+                    if (hybrid, rd53_hw) not in active_set:
+                        continue
+                    row = QHBoxLayout()
+                    lbl = QLabel(f"  H{hybrid} · Chip {rd53_hw}  ({layer['label']}):")
+                    lbl.setStyleSheet("font-size: 11px;")
+                    lbl.setMinimumWidth(200)
+                    row.addWidget(lbl)
+                    spin = QSpinBox()
+                    spin.setRange(0, 1000)
+                    spin.setValue(350)
+                    spin.setMaximumWidth(80)
+                    row.addWidget(spin)
+                    row.addStretch()
+                    inner_layout.addLayout(row)
+                    self._vthresh_spinboxes[(hybrid, rd53_hw)] = spin
+        except Exception:
+            inner_layout.addWidget(QLabel("  Configure chips first."))
+
+        if not self._vthresh_spinboxes:
+            inner_layout.addWidget(QLabel("  No active chips — configure in Config tab."))
+
+        scroll.setWidget(inner)
+        layout.addWidget(scroll)
+        return group
 
     # ------------------------------------------------------------------
     # Análisis post-scan (modo timed)

@@ -1,29 +1,27 @@
 from __future__ import annotations
 from src.acquisition.maps import PhysicsMap
 from src.acquisition.scans.acquisition_scan import AcquisitionScan
+from src.chip.register_map import ChipSettings
+
 
 class PhysicsScan(AcquisitionScan):
-    """
-    Physics data acquisition scan.
-    
-    Acquires real physics data from configured chips for particle detection.
-    Configures XML for each chip (global settings once, per-chip settings for each),
-    then launches a single physics acquisition that reads from all chips simultaneously.
-    
-    Usage:
-        scan = PhysicsScan(chips=[(0, 0), (1, 0), (1, 1)], scan_time=300)
-        output = scan.run()
-        if scan.scan_ended:
-            print(f"Physics acquisition successful: {scan.last_scan_end_pattern}")
-    """
-    
+    def __init__(self, *args, triggers: int = 0,
+                 vthresh_per_chip: dict[tuple[int, int], int] | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._triggers          = triggers
+        self._vthresh_per_chip  = vthresh_per_chip or {}
+
     @property
     def acquisition_name(self) -> str:
-        """Return the acquisition type identifier for Ph2_ACF."""
         return "physics"
-    
-    def get_map(self):
-        """Return the physics acquisition map with physics-specific parameters."""
-        return PhysicsMap()
-    
 
+    def get_map(self) -> PhysicsMap:
+        m = PhysicsMap()
+        m.triggers     = self._triggers
+        return m
+
+    def _setup_xml(self):
+        super()._setup_xml()
+        for (h, r), vt in self._vthresh_per_chip.items():
+            self.xml.set_chip_setting(h, r, ChipSettings.VTHRESHOLD_LIN, vt)
+        self.xml.save()
