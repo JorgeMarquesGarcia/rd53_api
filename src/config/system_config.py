@@ -304,6 +304,25 @@ class SystemConfig:
     @classmethod
     def get_active_chips(cls) -> list[int]:
         return cls._active_chips
+    
+    @classmethod
+    def get_active_hw_chips(cls) -> list[tuple[int, int]]:
+        """Devuelve lista de (hybrid_id, rd53_id_hw) para interacción con hardware."""
+        
+        active_hybrids = set(cls._active_hybrids)
+        active_chips   = set(cls._active_chips)   # ya tienen offset aplicado
+
+        keys = []
+        for layer in DETECTOR_LAYOUT.values():
+            h      = layer["hybrid"]
+            offset = layer["rd53_offset"]
+            if h not in active_hybrids:
+                continue
+            for c in layer["chips"]:
+                rd53 = c + offset
+                if rd53 in active_chips:
+                    keys.append((h, rd53))
+        return keys
 
     @classmethod
     def get_active_chip_keys(cls) -> list[tuple[int, int]]:

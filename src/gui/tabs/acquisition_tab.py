@@ -277,7 +277,7 @@ class AcquisitionTab(QWidget):
             self._log_write("[WARN] Acquisition already running.")
             return
 
-        chips = SystemConfig.get_active_chip_keys()
+        chips = SystemConfig.get_active_hw_chips()
         if not chips:
             self._log_write("[ERROR] No active chips. Configure chips in the Config tab.")
             return

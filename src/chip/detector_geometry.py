@@ -80,3 +80,18 @@ def z_position(hybrid_id: int) -> int:
         if layer["hybrid"] == hybrid_id:
             return layer["z_pos"]
     raise ValueError(f"hybrid_id {hybrid_id} not found in DETECTOR_LAYOUT")
+
+def hw_chip_id(hybrid_id: int, chip_id_local: int) -> int:
+    """Convierte (hybrid_id, chip_id_local) → rd53_id hardware (con offset)."""
+    for layer in DETECTOR_LAYOUT.values():
+        if layer["hybrid"] == hybrid_id:
+            return chip_id_local + layer["rd53_offset"]
+    raise ValueError(f"hybrid_id {hybrid_id} not found in DETECTOR_LAYOUT")
+
+
+def sw_chip_id(hybrid_id: int, rd53_id: int) -> int:
+    """Convierte (hybrid_id, rd53_id hardware) → chip_id_local software (sin offset)."""
+    for layer in DETECTOR_LAYOUT.values():
+        if layer["hybrid"] == hybrid_id:
+            return rd53_id - layer["rd53_offset"]
+    raise ValueError(f"hybrid_id {hybrid_id} not found in DETECTOR_LAYOUT")
