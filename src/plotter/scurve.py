@@ -6,6 +6,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+"""Seria interesante añadir la conversion a electrones en esta gráfica."""
 class SCurvePlotter(PlotterBase):
     """Plotter para el histograma SCurves del chip RD53A.
 

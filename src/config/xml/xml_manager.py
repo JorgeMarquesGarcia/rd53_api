@@ -277,7 +277,7 @@ class XmlManager(BaseConfigManager):
         if isinstance(node, KeyError):
             raise node
         
-        node.attrib["value"] = str(value)
+        node.text = f" {str(value)} "
         self._dirty = True
         self.logger.info("Updated %s", reg)
         self._auto_save()
