@@ -7,13 +7,13 @@ from src.acquisition.maps.base_map import BaseAcquisitionMap
 class AcquisitionMap(BaseAcquisitionMap):
     def __init__(self):
         self._ntriggers = 10
-        self._save_binary = 0
+        self._save_binary = 1
         self._latency = 39
         self._injtype = 0
         self._trigger_source = 6
         self._hitor_enable = 1
         self._clkdelay = 180
-
+    
     def to_dict(self) -> dict[Union[CalibrationSettings, FastCmdReg, ChipSettings], Value]:
         return {
             CalibrationSettings.N_TRIGGERS: self._ntriggers,

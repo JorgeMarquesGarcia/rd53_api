@@ -247,16 +247,14 @@ class XmlManager(BaseConfigManager):
 
     @ensure_loaded
     def get_register_value(self, reg: str | FastCmdReg) -> str | None:
-        """Get a register value by path or FastCmdReg enum"""
         if isinstance(reg, FastCmdReg):
             path = str(reg)
         else:
             path = reg
-        
         node = self._get_by_path(path)
         if isinstance(node, KeyError):
             raise node
-        return node.attrib.get("value", None)
+        return (node.text or "").strip()   # ← antes era node.attrib.get("value")
     
     @ensure_loaded
     def set_register_value(self, reg: str | FastCmdReg, value: str | int) -> None:
