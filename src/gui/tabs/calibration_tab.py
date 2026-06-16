@@ -319,9 +319,6 @@ class CalibrationTab(QWidget):
         pct = int(self._completed / self._total * 100)
         self._progress.setValue(pct)
         if success and run_number >= 0:
-            if self._thread:
-                self._thread.quit()
-                self._thread.wait()
             self.plots_loading.emit(True)
             self._load_plots(analysis, run_number)
             self.plots_loading.emit(False)

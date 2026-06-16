@@ -7,7 +7,7 @@ class CalibrationMap(BaseCalibrationMap):
     def __init__(self):
         self._latency = 139
         self._nclkdelay = 280
-        self._trigger_source = 3
+        self._trigger_source = 2
         self._hitor_enable = 0
         self._resettdac = -1
         self._save_binary = 0

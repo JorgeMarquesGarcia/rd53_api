@@ -27,14 +27,14 @@ class RootManager(BaseConfigManager):
         return uproot.open(self._root_path)
     
     def _list_root_files(self) -> list[Path]:
-        files = sorted(self._root_path.parent.glob("*.root"), key=os.path.getmtime)
+        files = sorted(self._root_path.glob("*.root"), key=os.path.getmtime)
         self.logger.info("Found ROOT files: %s", files)
         return files
 
     def _load_latest_root_file(self):
         files = self._list_root_files()
         if not files:
-            raise RootFileNotFoundError(f"No ROOT files found in directory: {self._root_path.parent}")
+            raise RootFileNotFoundError(f"No ROOT files found in directory: {self._root_path}")
         newest_file = files[-1]
         self._root_path = newest_file
         self.logger.info(f"Loading latest ROOT file: {newest_file}")
