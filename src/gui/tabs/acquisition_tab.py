@@ -60,7 +60,7 @@ class TimedAcquisitionWorker(QObject):
             self.log_message.emit("[OK]   Scan completed successfully.")
             self.log_message.emit("[START] Readback (CMSITminiDAQ -b)...")
 
-            _, raw_path = PhysicsScan.run_raw2root(
+            _, raw_path = self._scan.run_raw2root(
                 xml_path=SystemConfig.get_xml_path(),
                 results_dir=SystemConfig.get_root_path(),
                 line_callback=lambda line: self.log_message.emit(f"[DAQ] {line}"),

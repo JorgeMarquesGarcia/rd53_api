@@ -24,6 +24,8 @@ class AcquisitionScan(ABC):
         self.ph2_acf_dir = str(sys_config.get_ph2_acf_dir())
         self.xml = sys_config.create_xml_manager()
         self.txt_dir = str(sys_config.get_txt_base_dir())
+        from src.core import num_manager
+        num_manager.configure(Path(self.txt_dir) / "RunNumber.txt")
 
 
     @abstractmethod
@@ -109,7 +111,7 @@ class AcquisitionScan(ABC):
         if cwd is None:
             cwd = SystemConfig.get_txt_base_dir()
 
-        run_str = num_manager.get_formatted()
+        run_str = str(num_manager.get() - 1).zfill(6)
         binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
         cmd = f"CMSITminiDAQ -f {xml_path} -b {binary_path}"
 
