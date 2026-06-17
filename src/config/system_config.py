@@ -15,7 +15,6 @@ from src.workflow.system_state import (
 from src.config.xml.xml_manager import XmlManager
 from src.config.txt.txt_manager import TxtManager
 from src.config.root.root_manager import RootManager
-from src.chip.detector_geometry import DETECTOR_LAYOUT
 
 
 class SystemConfig:
@@ -73,18 +72,21 @@ class SystemConfig:
         This is separate from __new__ to allow explicit initialization
         and make the dependency on noisy pixel checks clear.
         """
+        # ANALYSIS -> ACQUISITION: only if noisy pixels are acceptable
         cls.register_transition_condition(
             SystemState.ANALYSIS,
             SystemState.ACQUISITION,
             cls.check_noisy_below_max,
         )
         
+        # ANALYSIS -> CALIBRATION: if noisy pixels exceed threshold
         cls.register_transition_condition(
             SystemState.ANALYSIS,
             SystemState.CALIBRATION,
             cls.check_noisy_above_max,
         )
 
+        
         cls._logger.info("SystemConfig setup complete - transition conditions registered")
     
     # =========================================================================
@@ -128,11 +130,14 @@ class SystemConfig:
         """
         rule = TRANSITION_RULES.get((from_state, to_state))
         
+        # Check if transition is defined
         if rule is None:
             raise InvalidStateTransitionError(from_state, to_state)
         
+        # Check required configuration
         cls._validate_required_config(rule.required_config, to_state)
         
+        # Check dynamic condition
         if rule.condition is not None:
             if not rule.condition():
                 raise TransitionConditionNotMetError(from_state, to_state, rule.condition_name)
@@ -251,6 +256,7 @@ class SystemConfig:
             )
         
         rule = TRANSITION_RULES[key]
+        # Create a new rule with the condition (TransitionRule is immutable by default)
         TRANSITION_RULES[key] = TransitionRule(
             required_config=rule.required_config,
             condition=condition,
@@ -260,8 +266,7 @@ class SystemConfig:
             "Registered condition for transition %s -> %s",
             from_state.name, to_state.name
         )
-
-    # =========================================================================
+        # =========================================================================
     # Chip / Detector Configuration
     # =========================================================================
 
@@ -269,9 +274,41 @@ class SystemConfig:
     _active_col_start: int = 128
     _active_col_end:   int = 263
 
-    # Hybrids y chips activos (rd53_id con offset)
+    # Hybrids y chips activos
     _active_hybrids: list[int] = [0]
     _active_chips:   list[int] = [0]
+
+    # configFile por chip: {(hybrid_id, rd53_id) -> "CMSIT_RD53A_X.txt"}
+    _chip_config_files: dict[tuple[int, int], str] = {}
+
+    @classmethod
+    def set_chip_config_files(
+        cls, config_map: dict[tuple[int, int], str]
+    ) -> None:
+        """
+        Almacena el nombre del configFile para cada chip presente en el XML.
+
+        Genera una línea INFO por chip:
+            Hybrid: 1, Chip_id: 4 => CMSIT_RD53A_4.txt
+
+        Args:
+            config_map: {(hybrid_id, rd53_id): "CMSIT_RD53A_X.txt", ...}
+        """
+        cls._chip_config_files = dict(config_map)
+        for (hybrid_id, rd53_id), fname in sorted(cls._chip_config_files.items()):
+            cls._logger.info(
+                "Hybrid: %d, Chip_id: %d => %s", hybrid_id, rd53_id, fname
+            )
+
+    @classmethod
+    def get_chip_config_files(cls) -> dict[tuple[int, int], str]:
+        """Devuelve una copia del mapa completo {(hybrid_id, rd53_id): configFile}."""
+        return dict(cls._chip_config_files)
+
+    @classmethod
+    def get_chip_config_file(cls, hybrid_id: int, rd53_id: int) -> str | None:
+        """Devuelve el configFile de un chip concreto, o None si no se conoce."""
+        return cls._chip_config_files.get((hybrid_id, rd53_id))
 
     @classmethod
     def set_active_columns(cls, start: int, end: int) -> None:
@@ -297,58 +334,13 @@ class SystemConfig:
 
     @classmethod
     def set_active_chips(cls, chips: list[int]) -> None:
-        """Set the list of active chips (rd53_id con offset)."""
+        """Set the list of active chips."""
         cls._active_chips = chips
         cls._logger.info("Active chips set: %s", chips)
 
     @classmethod
     def get_active_chips(cls) -> list[int]:
         return cls._active_chips
-    
-    @classmethod
-    def get_active_hw_chips(cls) -> list[tuple[int, int]]:
-        """Devuelve lista de (hybrid_id, rd53_id_hw) para interacción con hardware."""
-        
-        active_hybrids = set(cls._active_hybrids)
-        active_chips   = set(cls._active_chips)   # ya tienen offset aplicado
-
-        keys = []
-        for layer in DETECTOR_LAYOUT.values():
-            h      = layer["hybrid"]
-            offset = layer["rd53_offset"]
-            if h not in active_hybrids:
-                continue
-            for c in layer["chips"]:
-                rd53 = c + offset
-                if rd53 in active_chips:
-                    keys.append((h, rd53))
-        return keys
-
-    @classmethod
-    def get_active_chip_keys(cls) -> list[tuple[int, int]]:
-        """
-        Devuelve los chips activos como lista de (hybrid_id, chip_id_local),
-        sin offset — formato que necesita PhysicsScan y CoincidencePlotter.
-
-        Reconstruye los pares desde _active_hybrids y _active_chips usando
-        DETECTOR_LAYOUT como fuente de verdad para los offsets.
-
-        Returns:
-            list of (hybrid_id, chip_id_local), e.g. [(0,0), (1,0), (1,2)]
-        """
-        active_hybrids = set(cls._active_hybrids)
-        active_chips_with_offset = set(cls._active_chips)
-
-        keys = []
-        for layer in DETECTOR_LAYOUT.values():
-            h      = layer["hybrid"]
-            offset = layer["rd53_offset"]
-            if h not in active_hybrids:
-                continue
-            for c in layer["chips"]:
-                if (c + offset) in active_chips_with_offset:
-                    keys.append((h, c))
-        return keys
 
     @classmethod
     def get_chip_dir(cls, board: int = 0, optical: int = 0,
@@ -403,6 +395,7 @@ class SystemConfig:
         cls._xml_path = None
         cls._root_path = None
         cls._txt_base_dir = None
+        cls._chip_config_files = {}
         cls._state = SystemState.IDLE
         cls._logger.info("System configuration reset")
     

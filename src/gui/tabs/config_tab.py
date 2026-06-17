@@ -8,16 +8,23 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton,
     QCheckBox, QFileDialog, QMessageBox, QSplitter,
-    QScrollArea, QSpacerItem, QSizePolicy,
+    QScrollArea, QSpacerItem, QSizePolicy, QPlainTextEdit,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
-from src.chip.detector_geometry import DETECTOR_LAYOUT
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 
+# ---------------------------------------------------------------------------
+# Geometría del detector
+# ---------------------------------------------------------------------------
+DETECTOR_LAYOUT = {
+    0: {"label": "Layer 0  (Z=0)",  "hybrid": 0, "chips": [0],       "rd53_offset": 0, "single": True},
+    1: {"label": "Layer 1  (Z=1)",  "hybrid": 1, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
+    2: {"label": "Layer 2  (Z=2)",  "hybrid": 2, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
+}
 
 class ConfigTab(QWidget):
     """Tab de configuración: detector activo + paths del sistema."""
@@ -64,7 +71,7 @@ class ConfigTab(QWidget):
         chips_layout = QVBoxLayout(chips_group)
         chips_layout.setSpacing(10)
 
-        for layer_info in DETECTOR_LAYOUT.values():
+        for layer_id, layer_info in DETECTOR_LAYOUT.items():
             layer_box = QGroupBox(layer_info["label"])
             layer_box.setStyleSheet("QGroupBox { color: #90A4B0; font-size: 10px; }")
             layer_layout = QHBoxLayout(layer_box)
@@ -79,7 +86,7 @@ class ConfigTab(QWidget):
             else:
                 grid = QGridLayout()
                 grid.setSpacing(8)
-                positions = {0: (1, 0), 1: (1, 1), 2: (0, 0), 3: (0, 1)}
+                positions = {0: (1,0), 1: (1,1), 2: (0,0), 3: (0,1)}
                 for chip_id in layer_info["chips"]:
                     cb = QCheckBox(f"Chip {chip_id}")
                     row, col = positions[chip_id]
@@ -133,11 +140,11 @@ class ConfigTab(QWidget):
         paths_layout.setColumnStretch(1, 1)
 
         path_defs = [
-            ("ph2_acf_dir",  "Ph2_ACF directory",     True),
-            ("xml_path",     "XML config file",        False),
-            ("root_path",    "ROOT output directory",  True),
-            ("txt_base_dir", "TXT base directory",     True),
-            ("plots_dir",    "Plots output directory", True),
+            ("ph2_acf_dir",  "Ph2_ACF directory",    True),
+            ("xml_path",     "XML config file",       False),
+            ("root_path",    "ROOT output directory", True),
+            ("txt_base_dir", "TXT base directory",    True),
+            ("plots_dir",    "Plots output directory",True),
         ]
 
         for row, (key, label, is_dir) in enumerate(path_defs):
@@ -166,10 +173,20 @@ class ConfigTab(QWidget):
 
         summary_group = QGroupBox("CURRENT CONFIGURATION")
         summary_layout = QVBoxLayout(summary_group)
-        self._summary_label = QLabel("No configuration applied.")
-        self._summary_label.setStyleSheet("color: #505868; font-size: 11px;")
-        self._summary_label.setWordWrap(True)
-        summary_layout.addWidget(self._summary_label)
+        self._summary_box = QPlainTextEdit("No configuration applied.")
+        self._summary_box.setReadOnly(True)
+        self._summary_box.setFixedHeight(160)
+        self._summary_box.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background: #1A1F2B;"
+            "  color: #505868;"
+            "  font-family: monospace;"
+            "  font-size: 11px;"
+            "  border: 1px solid #2A3040;"
+            "  padding: 4px;"
+            "}"
+        )
+        summary_layout.addWidget(self._summary_box)
         layout.addWidget(summary_group)
 
         layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -206,16 +223,23 @@ class ConfigTab(QWidget):
         elif not Path(xml).exists():
             errors.append(f"XML file not found:\n{xml}")
 
-        active_hybrids = set()
-        active_chips   = []
+        # Construir selección completa: {(hybrid_id, rd53_id): is_active}
+        # rd53_id = chip_id_local + rd53_offset definido en DETECTOR_LAYOUT
+        chip_selection: dict[tuple[int, int], bool] = {}
+        active_hybrids: set[int] = set()
+        active_chips:   list[int] = []
+
         for layer_info in DETECTOR_LAYOUT.values():
-            offset = layer_info["rd53_offset"]
+            offset    = layer_info["rd53_offset"]
+            hybrid_id = layer_info["hybrid"]
             for chip_id in layer_info["chips"]:
-                key = (layer_info["hybrid"], chip_id)
-                cb = self._chip_checks.get(key)
-                if cb and cb.isChecked():
-                    active_hybrids.add(layer_info["hybrid"])
-                    active_chips.append(chip_id + offset)
+                rd53_id = chip_id + offset
+                cb      = self._chip_checks.get((hybrid_id, chip_id))
+                checked = bool(cb and cb.isChecked())
+                chip_selection[(hybrid_id, rd53_id)] = checked
+                if checked:
+                    active_hybrids.add(hybrid_id)
+                    active_chips.append(rd53_id)
 
         if not active_chips:
             errors.append("At least one chip must be active.")
@@ -234,6 +258,7 @@ class ConfigTab(QWidget):
             return
 
         try:
+            # 1. Registrar paths en el singleton
             SystemConfig.configure(
                 ph2_acf_dir=ph2_acf,
                 xml_path=xml,
@@ -241,16 +266,64 @@ class ConfigTab(QWidget):
                 txt_base_dir=txt if txt else None,
             )
             SystemConfig.set_active_columns(col_start, col_end)
-            SystemConfig.set_active_hybrids(list(active_hybrids))
+            SystemConfig.set_active_hybrids(sorted(active_hybrids))
             SystemConfig.set_active_chips(active_chips)
+
+            # txt_base_dir puede estar vacío: si no lo está, lo usamos para
+            # verificar si el .txt de cada chip existe físicamente en disco.
+            txt_base = Path(txt) if txt else None
+
+            # 2. Abrir el XML, activar/desactivar chips, leer configFile y
+            #    comprobar existencia del .txt en disco.
+            xml_mgr = SystemConfig.create_xml_manager(read_only=False)
+            config_files: dict[tuple[int, int], str] = {}
+            xml_log_lines: list[str] = []
+
+            for (hybrid_id, rd53_id), is_active in sorted(chip_selection.items()):
+                try:
+                    xml_mgr.set_chip_enable(hybrid_id, rd53_id, is_active)
+                    fname = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
+
+                    if fname:
+                        config_files[(hybrid_id, rd53_id)] = fname
+
+                    # Símbolo de existencia del fichero .txt en disco:
+                    #   ✓  existe   ✗  no existe   –  no hay txt_base_dir
+                    if not fname:
+                        file_symbol = "–"
+                    elif txt_base is None:
+                        file_symbol = "–"
+                    elif (txt_base / fname).exists():
+                        file_symbol = "✓"
+                    else:
+                        file_symbol = "✗"
+
+                    status = "ON " if is_active else "OFF"
+                    xml_log_lines.append(
+                        f"H{hybrid_id} Chip{rd53_id:>2}    [{status}]"
+                        f"   {fname or '(no configFile)':<28}"
+                        f"   {file_symbol}"
+                    )
+                except Exception as chip_err:
+                    # El chip puede no existir en este XML (slot vacío)
+                    self.logger.warning(
+                        "Hybrid %d / RD53A %d no encontrado en el XML: %s",
+                        hybrid_id, rd53_id, chip_err,
+                    )
+
+            # 3. Persistir el mapa de configFiles en el singleton
+            #    (genera un INFO por chip en el logger de Python)
+            SystemConfig.set_chip_config_files(config_files)
 
             if plots:
                 Path(plots).mkdir(parents=True, exist_ok=True)
 
-            self._update_summary(ph2_acf, xml, col_start, col_end)
+            self._update_summary(ph2_acf, xml, col_start, col_end, xml_log_lines)
             self.config_applied.emit()
-            self.logger.info("Configuración aplicada: cols=%d-%d chips=%s",
-                             col_start, col_end, active_chips)
+            self.logger.info(
+                "Configuración aplicada: cols=%d-%d chips=%s",
+                col_start, col_end, active_chips,
+            )
             self._save_settings()
             QMessageBox.information(self, "Configuration Applied",
                                     "System configured successfully.")
@@ -258,15 +331,34 @@ class ConfigTab(QWidget):
             QMessageBox.critical(self, "Configuration Error", str(e))
             self.logger.error("Error aplicando configuración: %s", e)
 
-    def _update_summary(self, ph2_acf, xml, col_start, col_end):
-        active = [f"H{h}/C{c}" for (h, c), cb in self._chip_checks.items() if cb.isChecked()]
-        self._summary_label.setText(
-            f"Ph2_ACF:  {Path(ph2_acf).name}\n"
-            f"XML:      {Path(xml).name}\n"
-            f"Columns:  {col_start} → {col_end}\n"
-            f"Active:   {', '.join(active)}"
+    def _update_summary(
+        self,
+        ph2_acf: str,
+        xml: str,
+        col_start: int,
+        col_end: int,
+        xml_log_lines: list[str],
+    ):
+        header = (
+            f"Ph2_ACF : {Path(ph2_acf).name}\n"
+            f"XML     : {Path(xml).name}\n"
+            f"Columns : {col_start} → {col_end}\n"
+            f"{'─' * 60}\n"
+            f"{'Chip':<12} {'Status':<6}  {'ConfigFile':<28}  File\n"
+            f"{'─' * 60}\n"
         )
-        self._summary_label.setStyleSheet("color: #69F0AE; font-size: 11px;")
+        body = "\n".join(xml_log_lines)
+        self._summary_box.setPlainText(header + body)
+        self._summary_box.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background: #1A1F2B;"
+            "  color: #69F0AE;"
+            "  font-family: monospace;"
+            "  font-size: 11px;"
+            "  border: 1px solid #2A3040;"
+            "  padding: 4px;"
+            "}"
+        )
 
     # ------------------------------------------------------------------
     # Persistencia entre sesiones
@@ -322,3 +414,10 @@ class ConfigTab(QWidget):
 
         except Exception as e:
             self.logger.warning("Could not load settings: %s", e)
+
+    # ------------------------------------------------------------------
+    # API pública para otros tabs
+    # ------------------------------------------------------------------
+    def get_active_chip_keys(self) -> list[tuple[int, int]]:
+        """Devuelve lista de (hybrid_id, chip_id) activos."""
+        return [(h, c) for (h, c), cb in self._chip_checks.items() if cb.isChecked()]
