@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from pathlib import Path
 from src.remote.terminal import Terminal
 from src.acquisition.maps import AcquisitionMap
 from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
@@ -91,6 +92,31 @@ class AcquisitionScan(ABC):
             self.last_scan_end_pattern = matched_pattern
 
         return output
+    
+    def run_raw2root(self, xml_path: str | Path, results_dir: str | Path,
+                      cwd: str | Path | None = None, timeout: int = 60,
+                      line_callback=None) -> tuple[str, Path]:
+        """
+        Ejecuta el volcado binario (-b) del run actual, usando el run number
+        de num_manager. No depende de una instancia de Scan (no usa chips ni
+        scan_time), así que puede llamarse desde timed, continuous o donde
+        haga falta.
+        """
+        from src.core import num_manager
+        from src.remote.terminal import Terminal
+        from src.config.system_config import SystemConfig
+
+        if cwd is None:
+            cwd = SystemConfig.get_txt_base_dir()
+
+        run_str = num_manager.get_formatted()
+        binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
+        cmd = f"CMSITminiDAQ -f {xml_path} -b {binary_path}"
+
+        with Terminal(timeout=timeout, line_callback=line_callback) as term:
+            output, matched_pattern = term.run_scan(cmd, cwd=cwd)
+
+        return output, binary_path
 
     @property
     def scan_ended(self) -> bool:

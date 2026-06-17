@@ -331,6 +331,16 @@ class SystemConfig:
     @classmethod
     def get_active_hybrids(cls) -> list[int]:
         return cls._active_hybrids
+    
+    @classmethod
+    def get_active_hw_chips(cls) -> list[tuple[int, int]]:
+        """
+        Get a list of (hybrid_id, rd53_id) tuples for all active chips.
+        
+        Returns:
+            List of tuples representing active chips.
+        """
+        return [(h, c) for h in cls._active_hybrids for c in cls._active_chips]
 
     @classmethod
     def set_active_chips(cls, chips: list[int]) -> None:

@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
 from src.config.system_config import SystemConfig
+from src.acquisition.scans.acquisition_scan import AcquisitionScan
 
 """Tengo que poder modificar el threshold desde la GUI"""
 # ---------------------------------------------------------------------------
@@ -51,12 +52,21 @@ class TimedAcquisitionWorker(QObject):
             self._scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
             self._scan.run()
 
-            if self._scan.scan_ended:
-                self.log_message.emit("[OK]   Scan completed successfully.")
-                self.finished.emit(True)
-            else:
+            if not self._scan.scan_ended:
                 self.log_message.emit("[WARN] Scan ended without end-pattern — possible abort.")
                 self.finished.emit(False)
+                return
+
+            self.log_message.emit("[OK]   Scan completed successfully.")
+            self.log_message.emit("[START] Readback (CMSITminiDAQ -b)...")
+
+            _, raw_path = PhysicsScan.run_raw2root(
+                xml_path=SystemConfig.get_xml_path(),
+                results_dir=SystemConfig.get_root_path(),
+                line_callback=lambda line: self.log_message.emit(f"[DAQ] {line}"),
+            )
+            self.log_message.emit(f"[OK]   Readback saved: {raw_path}")
+            self.finished.emit(True)
 
         except Exception as e:
             self.log_message.emit(f"[ERROR] {e}")
@@ -339,15 +349,13 @@ class AcquisitionTab(QWidget):
             self._run_analysis()
 
     def _build_physics_params_group(self) -> QGroupBox:
-        from src.chip.detector_geometry import DETECTOR_LAYOUT
-
         group = QGroupBox("PHYSICS PARAMETERS")
         layout = QVBoxLayout(group)
         layout.setSpacing(8)
 
         # Triggers — global
         trig_row = QHBoxLayout()
-        trig_row.addWidget(QLabel("Triggers (global):"))
+        trig_row.addWidget(QLabel("Triggers (unlimited = 0):"))
         self._spin_triggers = QSpinBox()
         self._spin_triggers.setRange(0, 9999)
         self._spin_triggers.setValue(0)
@@ -362,17 +370,34 @@ class AcquisitionTab(QWidget):
         thresh_label.setStyleSheet("font-size: 11px; color: #8A95A5; margin-top: 4px;")
         layout.addWidget(thresh_label)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMaximumHeight(130)
-        scroll.setFrameShape(scroll.NoFrame)
+        self._vthresh_scroll = QScrollArea()
+        self._vthresh_scroll.setWidgetResizable(True)
+        self._vthresh_scroll.setMaximumHeight(130)
+        self._vthresh_scroll.setFrameShape(self._vthresh_scroll.NoFrame)
+        layout.addWidget(self._vthresh_scroll)
+
+        self._vthresh_spinboxes: dict[tuple[int, int], QSpinBox] = {}
+        self._refresh_vthresh_spinboxes()
+
+        return group
+
+    def _refresh_vthresh_spinboxes(self) -> None:
+        """
+        Reconstruye los spinboxes de Vthreshold_LIN segun los chips activos
+        en ese momento. Se llama al arrancar y cada vez que cambia la config.
+        """
+        from src.chip.detector_geometry import DETECTOR_LAYOUT
+
+        # Guardar valores actuales para no perderlos si el chip sigue activo
+        prev_values: dict[tuple[int, int], int] = {
+            key: spin.value() for key, spin in self._vthresh_spinboxes.items()
+        }
+        self._vthresh_spinboxes.clear()
 
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
         inner_layout.setSpacing(4)
         inner_layout.setContentsMargins(0, 0, 0, 0)
-
-        self._vthresh_spinboxes: dict[tuple[int, int], QSpinBox] = {}
 
         try:
             active_set = set(SystemConfig.get_active_hw_chips())
@@ -384,13 +409,13 @@ class AcquisitionTab(QWidget):
                     if (hybrid, rd53_hw) not in active_set:
                         continue
                     row = QHBoxLayout()
-                    lbl = QLabel(f"  H{hybrid} · Chip {rd53_hw}  ({layer['label']}):")
+                    lbl = QLabel(f"  H{hybrid} . Chip {rd53_hw}  ({layer['label']}):")
                     lbl.setStyleSheet("font-size: 11px;")
                     lbl.setMinimumWidth(200)
                     row.addWidget(lbl)
                     spin = QSpinBox()
                     spin.setRange(0, 1000)
-                    spin.setValue(350)
+                    spin.setValue(prev_values.get((hybrid, rd53_hw), 350))
                     spin.setMaximumWidth(80)
                     row.addWidget(spin)
                     row.addStretch()
@@ -402,9 +427,7 @@ class AcquisitionTab(QWidget):
         if not self._vthresh_spinboxes:
             inner_layout.addWidget(QLabel("  No active chips — configure in Config tab."))
 
-        scroll.setWidget(inner)
-        layout.addWidget(scroll)
-        return group
+        self._vthresh_scroll.setWidget(inner)
 
     # ------------------------------------------------------------------
     # Análisis post-scan (modo timed)
@@ -476,13 +499,14 @@ class AcquisitionTab(QWidget):
     # API pública — llamada desde MainWindow cuando se aplica config
     # ------------------------------------------------------------------
     def on_config_applied(self):
-        """Actualiza el label de chips activos cuando cambia la configuración."""
+        """Refresca chips activos y spinboxes de Vthreshold cuando cambia la config."""
         try:
-            keys = SystemConfig.get_active_chip_keys()
+            keys = SystemConfig.get_active_hw_chips()
             self._chips_label.setText(f"Active: {keys}")
             self._chips_label.setStyleSheet("color: #69F0AE; font-size: 11px;")
         except Exception:
             pass
+        self._refresh_vthresh_spinboxes()
 
     # ------------------------------------------------------------------
     # Helper log
