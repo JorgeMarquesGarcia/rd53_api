@@ -268,7 +268,9 @@ class ConfigTab(QWidget):
             SystemConfig.set_active_columns(col_start, col_end)
             SystemConfig.set_active_hybrids(sorted(active_hybrids))
             SystemConfig.set_active_chips(active_chips)
-
+            SystemConfig.set_active_hw_chips(
+                [(h, r) for (h, r), active in chip_selection.items() if active]
+            )
             # txt_base_dir puede estar vacío: si no lo está, lo usamos para
             # verificar si el .txt de cada chip existe físicamente en disco.
             txt_base = Path(txt) if txt else None

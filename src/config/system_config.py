@@ -48,6 +48,7 @@ class SystemConfig:
     _xml_path: Path | None = None
     _root_path: Path | None = None
     _txt_base_dir: Path | None = None
+    _active_hw_chips: list[tuple[int, int]] = []
     
     # Noisy pixels tracking (for state transition decisions)
     NOISY_PIXELS_MAX: int = 5
@@ -333,14 +334,12 @@ class SystemConfig:
         return cls._active_hybrids
     
     @classmethod
+    def set_active_hw_chips(cls, chips: list[tuple[int, int]]) -> None:
+        cls._active_hw_chips = list(chips)
+
+    @classmethod
     def get_active_hw_chips(cls) -> list[tuple[int, int]]:
-        """
-        Get a list of (hybrid_id, rd53_id) tuples for all active chips.
-        
-        Returns:
-            List of tuples representing active chips.
-        """
-        return [(h, c) for h in cls._active_hybrids for c in cls._active_chips]
+        return list(cls._active_hw_chips)
 
     @classmethod
     def set_active_chips(cls, chips: list[int]) -> None:
@@ -407,6 +406,7 @@ class SystemConfig:
         cls._txt_base_dir = None
         cls._chip_config_files = {}
         cls._state = SystemState.IDLE
+        cls._active_hw_chips = []
         cls._logger.info("System configuration reset")
     
     @classmethod

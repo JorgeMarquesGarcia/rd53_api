@@ -222,7 +222,7 @@ class CalibrationTab(QWidget):
         self._progress.setValue(0)
         self._progress.setStyleSheet(
             "QProgressBar { border: 1px solid #2E3340; border-radius: 3px; "
-            "background: #0F1117; color: #D0D4DC; text-align: center; }"
+            "background: #0F1117; color: #212529; text-align: center; }"
             "QProgressBar::chunk { background: #00E5FF; }"
         )
         layout.addWidget(self._progress)
@@ -327,7 +327,12 @@ class CalibrationTab(QWidget):
         self._btn_abort.setEnabled(False)
         self._progress.setValue(100)
         self._log_write("[DONE] All calibrations completed.")
-        # El thread ya se cerró en _on_analysis_finished
+
+        if self._thread:
+            self._thread.quit()
+            self._thread.wait()
+            self._thread = None
+        self._worker = None
 
     def _load_plots(self, analysis: str, run_number: int):
         """Carga los plots del análisis terminado en el panel de resultados."""
