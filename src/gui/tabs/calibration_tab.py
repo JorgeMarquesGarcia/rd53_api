@@ -32,7 +32,7 @@ from src.plotter.histogram1d import (
 from src.plotter.scurve import SCurvePlotter
 
 # ---------------------------------------------------------------------------
-# Análisis disponibles
+# Análisis disponibles Hay que añadir que el usuario pueda modificar Vthreshold_LIN
 # ---------------------------------------------------------------------------
 AVAILABLE_ANALYSES = [
     ("scurve",     "S-Curve Scan",              "Threshold & noise measurement via injection scan"),
