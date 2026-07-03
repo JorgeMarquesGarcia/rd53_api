@@ -370,8 +370,8 @@ class StandaloneAcquisitionWorker(QObject):
                 if raw_path is not None:
                     # .raw llegó al límite → detener el DAQ de este ciclo
                     size_mb = raw_path.stat().st_size // 1024 ** 2
-                    self._dbg(f".raw reached {size_mb} MB — rotating (aborting DAQ)")
-                    scan.abort()
+                    self._dbg(f".raw reached {size_mb} MB — rotating (ending scan cleanly)")
+                    scan.end_scan()
                     daq_done.wait(timeout=10)
 
                     xml_path = SystemConfig.get_xml_path()
