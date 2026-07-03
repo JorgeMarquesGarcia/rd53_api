@@ -73,8 +73,34 @@ class Terminal:
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
+    def send_enter(self) -> bool:
+        """
+        Envía un Enter (\\n) al stdin del proceso en curso.
+
+        Es la manera limpia de parar CMSITminiDAQ en modo -t -1: el DAQ
+        detecta el Enter, cierra el fichero .raw correctamente y termina.
+
+        Returns:
+            True si el Enter se envió con éxito, False si el proceso no
+            estaba vivo o stdin no estaba disponible.
+        """
+        if self._proc and self._proc.poll() is None and self._proc.stdin:
+            try:
+                self._proc.stdin.write('\n')
+                self._proc.stdin.flush()
+                logger.debug("Enter sent to process stdin")
+                return True
+            except OSError as e:
+                logger.warning(f"send_enter failed: {e}")
+        return False
+
     def kill(self):
-        """Envía SIGINT al proceso en curso (equivalente a Ctrl+C)."""
+        """
+        Envía SIGINT al proceso en curso (equivalente a Ctrl+C).
+
+        Úsalo solo como fallback de emergencia. Para parar CMSITminiDAQ
+        en modo standalone usa send_enter() para un cierre limpio del .raw.
+        """
         if self._proc and self._proc.poll() is None:
             self._proc.send_signal(signal.SIGINT)
             logger.debug("SIGINT sent to process")
@@ -147,6 +173,7 @@ class Terminal:
         self._proc = subprocess.Popen(
             command,
             shell=True,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

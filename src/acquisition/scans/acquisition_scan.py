@@ -125,6 +125,20 @@ class AcquisitionScan(ABC):
         """True si el scan terminó con uno de los patrones de fin esperados."""
         return self.last_scan_end_pattern is not None
 
+    def end_scan(self):
+        """
+        Para el DAQ de forma limpia enviando Enter al stdin del proceso.
+
+        CMSITminiDAQ en modo -t -1 cierra el .raw correctamente al recibir
+        un Enter, lo que garantiza que el fichero queda íntegro para raw2root.
+        Si send_enter() falla (proceso ya muerto, stdin no disponible) cae
+        a SIGINT como último recurso.
+        """
+        if hasattr(self, '_terminal') and self._terminal:
+            sent = self._terminal.send_enter()
+            if not sent:
+                self._terminal.kill()
+
     def abort(self):
         if hasattr(self, '_terminal') and self._terminal:
             self._terminal.kill()

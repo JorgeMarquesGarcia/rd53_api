@@ -84,6 +84,10 @@ class TimedAcquisitionWorker(QObject):
             self.log_message.emit(f"[ERROR] {e}")
             self.finished.emit(False)
 
+    def end_scan(self):
+        if self._scan is not None:
+            self._scan.end_scan()
+
     def abort(self):
         if self._scan is not None:
             self._scan.abort()
@@ -256,6 +260,14 @@ class StandaloneAcquisitionWorker(QObject):
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
+
+    def end_scan(self):
+        self._abort_flag = True
+        if self._current_scan is not None:
+            try:
+                self._current_scan.end_scan()
+            except Exception:
+                pass
 
     def abort(self):
         self._abort_flag = True
@@ -585,6 +597,8 @@ class AcquisitionTab(QWidget):
         self._btn_start.clicked.connect(self._start_acquisition)
         layout.addWidget(self._btn_start)
 
+        abort_row = QHBoxLayout()
+
         self._btn_abort = QPushButton("ABORT")
         self._btn_abort.setStyleSheet(
             "QPushButton { color: #FF5252; border-color: #FF5252; }"
@@ -592,7 +606,18 @@ class AcquisitionTab(QWidget):
         )
         self._btn_abort.setEnabled(False)
         self._btn_abort.clicked.connect(self._abort)
-        layout.addWidget(self._btn_abort)
+        abort_row.addWidget(self._btn_abort)
+
+        self._btn_stop_acq = QPushButton("STOP ACQ")
+        self._btn_stop_acq.setStyleSheet(
+            "QPushButton { color: #69F0AE; border-color: #69F0AE; }"
+            "QPushButton:hover { background: #69F0AE; color: #1A1D23; }"
+        )
+        self._btn_stop_acq.setEnabled(False)
+        self._btn_stop_acq.clicked.connect(self._stop_acq)
+        abort_row.addWidget(self._btn_stop_acq)
+
+        layout.addLayout(abort_row)
 
         layout.addWidget(self._build_physics_params_group())
         layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
@@ -908,7 +933,17 @@ class AcquisitionTab(QWidget):
         if self._standalone_worker:
             self._standalone_worker.abort()
         self._btn_abort.setEnabled(False)
+        self._btn_stop_acq.setEnabled(False)
         self._log_write("[ABORTED] Abort requested…")
+
+    def _stop_acq(self):
+        if self._worker:
+            self._worker.end_scan()
+        if self._standalone_worker:
+            self._standalone_worker.end_scan()
+        self._btn_abort.setEnabled(False)
+        self._btn_stop_acq.setEnabled(False)
+        self._log_write("[STOP] Controlled stop requested…")
 
     # ==================================================================
     # UI helpers
@@ -917,6 +952,7 @@ class AcquisitionTab(QWidget):
     def _set_running_ui(self, running: bool):
         self._btn_start.setEnabled(not running)
         self._btn_abort.setEnabled(running)
+        self._btn_stop_acq.setEnabled(running)
         self._btn_show_traj.setEnabled(False)
         self._btn_save_traj.setEnabled(False)
         if running:
