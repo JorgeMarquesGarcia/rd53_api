@@ -7,10 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QLabel, QPushButton,
     QTextEdit, QSpinBox, QRadioButton,
-    QButtonGroup, QSpacerItem, QSizePolicy,
+    QButtonGroup,
     QScrollArea, QProgressBar,
 )
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QObject
@@ -518,7 +518,9 @@ class AcquisitionTab(QWidget):
         left_splitter = QSplitter(Qt.Vertical)
         left_splitter.addWidget(self._build_control_panel())
         left_splitter.addWidget(self._build_log_panel())
-        left_splitter.setSizes([520, 280])
+        left_splitter.setSizes([710, 90])
+        left_splitter.setStretchFactor(0, 1)   # el panel de control absorbe el espacio libre al redimensionar
+        left_splitter.setStretchFactor(1, 0)   # el log NO crece solo al redimensionar la ventana
         left_splitter.setMaximumWidth(420)
 
         h_splitter = QSplitter(Qt.Horizontal)
@@ -537,37 +539,42 @@ class AcquisitionTab(QWidget):
         title.setObjectName("section_title")
         layout.addWidget(title)
 
-        # --- Modo ---
-        mode_group  = QGroupBox("ACQUISITION MODE")
-        mode_layout = QVBoxLayout(mode_group)
-        mode_layout.setSpacing(8)
+        # --- Modo + Scan time (matriz 2x2) ---
+        mode_group = QGroupBox("ACQUISITION MODE")
+        mode_grid  = QGridLayout(mode_group)
+        mode_grid.setHorizontalSpacing(16)
+        mode_grid.setVerticalSpacing(8)
 
-        self._radio_timed = QRadioButton("Timed  — acquire for N seconds, then plot")
-        self._radio_cont  = QRadioButton("Standalone  — continuous acquisition with live trajectories")
+        self._radio_timed = QRadioButton("Timed")
+        self._radio_cont  = QRadioButton("StandAlone")
         self._radio_timed.setChecked(True)
         self._mode_group = QButtonGroup()
         self._mode_group.addButton(self._radio_timed, 0)
         self._mode_group.addButton(self._radio_cont,  1)
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
 
-        mode_layout.addWidget(self._radio_timed)
-        mode_layout.addWidget(self._radio_cont)
-        layout.addWidget(mode_group)
+        # Columna 0: radios (Fila 0 = Timed, Fila 1 = Standalone)
+        mode_grid.addWidget(self._radio_timed, 0, 0)
+        mode_grid.addWidget(self._radio_cont,  1, 0)
 
-        # --- Parámetros ---
-        params_group  = QGroupBox("SCAN PARAMETERS")
-        params_layout = QHBoxLayout(params_group)
-        params_layout.setSpacing(12)
-
+        # Columna 1, fila 0: Scan time (label + spinbox en horizontal)
+        scan_time_row = QHBoxLayout()
+        scan_time_row.setSpacing(6)
         self._lbl_scan_time = QLabel("Scan time (s):")
-        params_layout.addWidget(self._lbl_scan_time)
+        scan_time_row.addWidget(self._lbl_scan_time)
         self._scan_time = QSpinBox()
         self._scan_time.setRange(1, 3600)
         self._scan_time.setValue(30)
         self._scan_time.setMaximumWidth(80)
-        params_layout.addWidget(self._scan_time)
-        params_layout.addStretch()
-        layout.addWidget(params_group)
+        scan_time_row.addWidget(self._scan_time)
+        scan_time_row.addStretch()
+        mode_grid.addLayout(scan_time_row, 0, 1)
+        # Fila 1, columna 1: vacío (deliberado)
+
+        mode_grid.setColumnStretch(0, 0)
+        mode_grid.setColumnStretch(1, 1)
+
+        layout.addWidget(mode_group)
 
         # --- Chips activos ---
         chips_group  = QGroupBox("ACTIVE CHIPS")
@@ -619,8 +626,7 @@ class AcquisitionTab(QWidget):
 
         layout.addLayout(abort_row)
 
-        layout.addWidget(self._build_physics_params_group())
-        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        layout.addWidget(self._build_physics_params_group(), 1)
         return panel
 
     def _build_log_panel(self) -> QWidget:
@@ -692,8 +698,11 @@ class AcquisitionTab(QWidget):
         timed = self._mode_group.checkedId() == 0
         self._scan_time.setEnabled(timed)
         self._lbl_scan_time.setEnabled(timed)
-        self._standalone_status.setVisible(not timed)
-
+        if timed:
+            self._standalone_status.hide()   # nunca visible en Timed, ni con texto residual
+        # En Standalone NO se muestra aquí: permanece oculto hasta START
+        # (lo muestra _start_standalone(), línea ~781-782)
+        self._btn_stop_acq.setEnabled(False)   # STOP ACQ no aplica en modo Timed
     # ==================================================================
     # Arranque
     # ==================================================================
@@ -950,9 +959,10 @@ class AcquisitionTab(QWidget):
     # ==================================================================
 
     def _set_running_ui(self, running: bool):
+        is_standalone = self._mode_group.checkedId() == 1
         self._btn_start.setEnabled(not running)
         self._btn_abort.setEnabled(running)
-        self._btn_stop_acq.setEnabled(running)
+        self._btn_stop_acq.setEnabled(running and is_standalone)
         self._btn_show_traj.setEnabled(False)
         self._btn_save_traj.setEnabled(False)
         if running:
@@ -980,13 +990,14 @@ class AcquisitionTab(QWidget):
         trig_row.addStretch()
         layout.addLayout(trig_row)
 
-        thresh_label = QLabel("Vthreshold_LIN  (per chip):")
-        thresh_label.setStyleSheet("font-size: 11px; color: #8A95A5; margin-top: 4px;")
+        thresh_label = QLabel("AFE Linear Threshold")
+        thresh_label.setStyleSheet(
+            "font-size: 11px; color: #4FA3B0; letter-spacing: 1px; margin-top: 4px;"
+        )
         layout.addWidget(thresh_label)
 
         self._vthresh_scroll = QScrollArea()
         self._vthresh_scroll.setWidgetResizable(True)
-        self._vthresh_scroll.setMaximumHeight(130)
         self._vthresh_scroll.setFrameShape(self._vthresh_scroll.NoFrame)
         layout.addWidget(self._vthresh_scroll)
 

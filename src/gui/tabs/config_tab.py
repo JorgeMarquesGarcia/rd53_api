@@ -9,11 +9,13 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton,
     QCheckBox, QFileDialog, QMessageBox, QSplitter,
     QScrollArea, QSpacerItem, QSizePolicy, QPlainTextEdit,
+    QComboBox, QListWidget, QListWidgetItem,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
+from src.config.xml.xml_manager import XmlManager
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 
@@ -36,24 +38,58 @@ class ConfigTab(QWidget):
         self.logger = logging.getLogger("ConfigTab")
         self._chip_checks: dict[tuple, QCheckBox] = {}
         self._path_edits:  dict[str, QLineEdit]   = {}
+
+        # Mapeo (hybrid_id, chip_id_local) -> rd53_id (id global usado en el XML)
+        self._chip_to_rd53: dict[tuple[int, int], int] = {}
+
+        # Checkboxes "All": uno por layer multi-chip (hybrid_id -> checkbox)
+        # y uno maestro para todo el detector.
+        self._layer_all_checks: dict[int, QCheckBox] = {}
+        self._all_chips_check: QCheckBox | None = None
+
+        # Widgets de la caja de ficheros TXT por chip
+        self._txt_combo: dict[tuple[int, int], QComboBox] = {}
+        self._txt_rows:  dict[tuple[int, int], QWidget]   = {}
+        self._txt_file_list: QListWidget | None = None
+
         self._build_ui()
         self._load_settings()
+        self._refresh_txt_file_list()
         self.logger.info("ConfigTab inicializado.")
 
     # ------------------------------------------------------------------
     # Construcción UI
     # ------------------------------------------------------------------
     def _build_ui(self):
-        main_layout = QHBoxLayout(self)
+        main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(16)
+        main_layout.setSpacing(10)
+
+        # Barra superior: título + botón APPLY CONFIG compacto a la derecha
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+
+        header_title = QLabel("SYSTEM CONFIGURATION")
+        header_title.setObjectName("section_title")
+        header_layout.addWidget(header_title)
+        header_layout.addStretch(1)
+
+        apply_btn = QPushButton("APPLY CONFIG")
+        apply_btn.setObjectName("btn_launch")
+        apply_btn.setMaximumWidth(160)
+        apply_btn.setMaximumHeight(28)
+        apply_btn.setToolTip("Apply the current detector/path configuration")
+        apply_btn.clicked.connect(self._apply_config)
+        header_layout.addWidget(apply_btn)
+
+        main_layout.addLayout(header_layout)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._build_detector_panel())
         splitter.addWidget(self._build_paths_panel())
         splitter.setSizes([480, 480])
 
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(splitter, 1)
 
     # ------------------------------------------------------------------
     # Panel izquierdo: Detector
@@ -71,31 +107,75 @@ class ConfigTab(QWidget):
         chips_layout = QVBoxLayout(chips_group)
         chips_layout.setSpacing(10)
 
+        # Checkbox "All" maestro: selecciona/deselecciona todos los chips
+        # del detector. Vive junto al chip único de Layer 0.
+        self._all_chips_check = QCheckBox("All")
+        self._all_chips_check.setToolTip("Select / deselect all chips in the detector")
+
         for layer_id, layer_info in DETECTOR_LAYOUT.items():
             layer_box = QGroupBox(layer_info["label"])
             layer_box.setStyleSheet("QGroupBox { color: #90A4B0; font-size: 10px; }")
             layer_layout = QHBoxLayout(layer_box)
             layer_layout.setSpacing(12)
 
+            offset    = layer_info["rd53_offset"]
+            hybrid_id = layer_info["hybrid"]
+
             if layer_info["single"]:
                 cb = QCheckBox("Chip 0  (single sensor)")
                 cb.setChecked(True)
-                key = (layer_info["hybrid"], 0)
+                key = (hybrid_id, 0)
                 self._chip_checks[key] = cb
+                self._chip_to_rd53[key] = 0 + offset
+                cb.toggled.connect(
+                    lambda checked, h=hybrid_id: self._on_chip_checkbox_toggled(h, checked)
+                )
                 layer_layout.addWidget(cb)
+
+                # "All" maestro, empujado al extremo derecho de la caja.
+                layer_layout.addStretch(1)
+                layer_layout.addWidget(self._all_chips_check)
             else:
                 grid = QGridLayout()
-                grid.setSpacing(8)
+                grid.setHorizontalSpacing(100)
+                grid.setVerticalSpacing(8)
                 positions = {0: (1,0), 1: (1,1), 2: (0,0), 3: (0,1)}
                 for chip_id in layer_info["chips"]:
                     cb = QCheckBox(f"Chip {chip_id}")
                     row, col = positions[chip_id]
                     grid.addWidget(cb, row, col)
-                    key = (layer_info["hybrid"], chip_id)
+                    key = (hybrid_id, chip_id)
                     self._chip_checks[key] = cb
+                    self._chip_to_rd53[key] = chip_id + offset
+                    cb.toggled.connect(
+                        lambda checked, h=hybrid_id: self._on_chip_checkbox_toggled(h, checked)
+                    )
                 layer_layout.addLayout(grid)
 
+                # "All" del layer: separado del resto, empujado al extremo
+                # derecho de la caja (no forma parte de la rejilla 2x2).
+                layer_all_cb = QCheckBox("All")
+                layer_all_cb.setToolTip(f"Select / deselect all chips in {layer_info['label']}")
+                layer_all_cb.toggled.connect(
+                    lambda checked, h=hybrid_id: self._on_layer_all_toggled(h, checked)
+                )
+                self._layer_all_checks[hybrid_id] = layer_all_cb
+
+                layer_layout.addStretch(1)
+                layer_layout.addWidget(layer_all_cb, alignment=Qt.AlignVCenter)
+
             chips_layout.addWidget(layer_box)
+
+        # Estado inicial coherente de los checkboxes "All" según los chips
+        # marcados por defecto (layer 0 empieza activo, 1 y 2 no).
+        for hybrid_id, all_cb in self._layer_all_checks.items():
+            chips_in_layer = [cb for (h, _c), cb in self._chip_checks.items() if h == hybrid_id]
+            all_cb.blockSignals(True)
+            all_cb.setChecked(bool(chips_in_layer) and all(cb.isChecked() for cb in chips_in_layer))
+            all_cb.blockSignals(False)
+
+        self._all_chips_check.toggled.connect(self._on_master_all_toggled)
+        self._update_master_all_check()
 
         layout.addWidget(chips_group)
 
@@ -119,8 +199,70 @@ class ConfigTab(QWidget):
 
         layout.addWidget(cols_group)
 
-        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+        summary_group = QGroupBox("CURRENT CONFIGURATION")
+        summary_layout = QVBoxLayout(summary_group)
+        self._summary_box = QPlainTextEdit("No configuration applied.")
+        self._summary_box.setReadOnly(True)
+        self._summary_box.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background: #1A1F2B;"
+            "  color: #505868;"
+            "  font-family: monospace;"
+            "  font-size: 11px;"
+            "  border: 1px solid #2A3040;"
+            "  padding: 4px;"
+            "}"
+        )
+        summary_layout.addWidget(self._summary_box)
+        layout.addWidget(summary_group, 1)
         return panel
+
+    # ------------------------------------------------------------------
+    # Checkboxes "All": selección/deselección cruzada de chips
+    # ------------------------------------------------------------------
+    def _on_layer_all_toggled(self, hybrid_id: int, checked: bool):
+        """Marca/desmarca todos los chips de un layer al pulsar su 'All'."""
+        for (h, _c), cb in self._chip_checks.items():
+            if h == hybrid_id:
+                cb.blockSignals(True)
+                cb.setChecked(checked)
+                cb.blockSignals(False)
+        self._refresh_chip_txt_rows()
+        self._update_master_all_check()
+
+    def _on_master_all_toggled(self, checked: bool):
+        """Marca/desmarca todos los chips del detector al pulsar el 'All' maestro."""
+        for cb in self._chip_checks.values():
+            cb.blockSignals(True)
+            cb.setChecked(checked)
+            cb.blockSignals(False)
+        for all_cb in self._layer_all_checks.values():
+            all_cb.blockSignals(True)
+            all_cb.setChecked(checked)
+            all_cb.blockSignals(False)
+        self._refresh_chip_txt_rows()
+
+    def _on_chip_checkbox_toggled(self, hybrid_id: int, checked: bool):
+        """Mantiene sincronizados los checkboxes 'All' (layer y maestro)
+        cuando el usuario marca/desmarca un chip individual."""
+        all_cb = self._layer_all_checks.get(hybrid_id)
+        if all_cb is not None:
+            chips_in_layer = [cb for (h, _c), cb in self._chip_checks.items() if h == hybrid_id]
+            all_checked = bool(chips_in_layer) and all(cb.isChecked() for cb in chips_in_layer)
+            all_cb.blockSignals(True)
+            all_cb.setChecked(all_checked)
+            all_cb.blockSignals(False)
+        self._update_master_all_check()
+
+    def _update_master_all_check(self):
+        """Recalcula el estado del checkbox 'All' maestro según los chips activos."""
+        if self._all_chips_check is None or not self._chip_checks:
+            return
+        all_checked = all(cb.isChecked() for cb in self._chip_checks.values())
+        self._all_chips_check.blockSignals(True)
+        self._all_chips_check.setChecked(all_checked)
+        self._all_chips_check.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Panel derecho: Paths
@@ -166,31 +308,173 @@ class ConfigTab(QWidget):
 
         layout.addWidget(paths_group)
 
-        apply_btn = QPushButton("APPLY CONFIGURATION")
-        apply_btn.setObjectName("btn_launch")
-        apply_btn.clicked.connect(self._apply_config)
-        layout.addWidget(apply_btn)
+        # --------------------------------------------------------------
+        # Caja: ficheros TXT de configuración por chip.
+        # El botón de aplicar ahora vive en la cabecera superior de la
+        # ventana (APPLY CONFIG), así que esta caja puede usar el espacio
+        # vertical restante para mostrar más filas de la lista de .txt.
+        # --------------------------------------------------------------
+        txt_files_group = self._build_txt_files_panel()
+        layout.addWidget(txt_files_group, 1)
 
-        summary_group = QGroupBox("CURRENT CONFIGURATION")
-        summary_layout = QVBoxLayout(summary_group)
-        self._summary_box = QPlainTextEdit("No configuration applied.")
-        self._summary_box.setReadOnly(True)
-        self._summary_box.setFixedHeight(160)
-        self._summary_box.setStyleSheet(
-            "QPlainTextEdit {"
+        # Refrescar la lista de .txt disponibles cuando cambia el directorio
+        self._path_edits["txt_base_dir"].textChanged.connect(self._refresh_txt_file_list)
+
+        return panel
+
+    # ------------------------------------------------------------------
+    # Caja: ficheros TXT de configuración por chip
+    # ------------------------------------------------------------------
+    def _build_txt_files_panel(self) -> QGroupBox:
+        """Caja para renombrar el fichero .txt (configFile) de cada chip
+        activo y para ver de un vistazo qué .txt existen ya en el
+        directorio TXT base configurado arriba."""
+        group = QGroupBox("CHIP TXT CONFIG FILES")
+        group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
+
+        rows_container = QWidget()
+        rows_layout = QVBoxLayout(rows_container)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
+
+        for (hybrid_id, chip_local), rd53_id in sorted(
+            self._chip_to_rd53.items(), key=lambda kv: (kv[0][0], kv[1])
+        ):
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            lbl = QLabel(f"H{hybrid_id} Chip{rd53_id}:")
+            lbl.setMinimumWidth(90)
+            lbl.setStyleSheet("color: #90A4B0; font-size: 11px;")
+            row_layout.addWidget(lbl)
+
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.setInsertPolicy(QComboBox.NoInsert)
+            combo.setPlaceholderText("CMSIT_RD53A_xx.txt")
+            combo.setMinimumWidth(200)
+            row_layout.addWidget(combo, 1)
+
+            rows_layout.addWidget(row)
+
+            key = (hybrid_id, rd53_id)
+            self._txt_combo[key] = combo
+            self._txt_rows[key] = row
+
+            cb = self._chip_checks.get((hybrid_id, chip_local))
+            if cb is not None:
+                cb.toggled.connect(self._refresh_chip_txt_rows)
+
+        layout.addWidget(rows_container)
+
+        btn_row = QHBoxLayout()
+        load_btn = QPushButton("Load names from XML")
+        load_btn.setToolTip("Lee el configFile actual de cada chip activo desde el XML seleccionado arriba.")
+        load_btn.clicked.connect(self._load_configfiles_from_xml)
+        btn_row.addWidget(load_btn)
+
+        refresh_btn = QPushButton("Refresh file list")
+        refresh_btn.setToolTip("Vuelve a escanear el directorio TXT base en busca de ficheros .txt.")
+        refresh_btn.clicked.connect(self._refresh_txt_file_list)
+        btn_row.addWidget(refresh_btn)
+        layout.addLayout(btn_row)
+
+        list_lbl = QLabel("Available config files in TXT base directory:")
+        list_lbl.setStyleSheet("color: #7A8090; font-size: 10px;")
+        layout.addWidget(list_lbl)
+
+        self._txt_file_list = QListWidget()
+        self._txt_file_list.setMinimumHeight(90)
+        self._txt_file_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._txt_file_list.setStyleSheet(
+            "QListWidget {"
             "  background: #1A1F2B;"
-            "  color: #505868;"
+            "  color: #B8C4D0;"
             "  font-family: monospace;"
-            "  font-size: 11px;"
+            "  font-size: 10px;"
             "  border: 1px solid #2A3040;"
-            "  padding: 4px;"
             "}"
         )
-        summary_layout.addWidget(self._summary_box)
-        layout.addWidget(summary_group)
+        layout.addWidget(self._txt_file_list, 1)
 
-        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
-        return panel
+        self._refresh_chip_txt_rows()
+        return group
+
+    def _refresh_chip_txt_rows(self):
+        """Muestra/oculta las filas de la caja TXT según los chips activos."""
+        for (hybrid_id, chip_local), rd53_id in self._chip_to_rd53.items():
+            cb = self._chip_checks.get((hybrid_id, chip_local))
+            row = self._txt_rows.get((hybrid_id, rd53_id))
+            if row is not None:
+                row.setVisible(bool(cb and cb.isChecked()))
+
+    def _refresh_txt_file_list(self):
+        """Escanea txt_base_dir y actualiza tanto la lista de referencia
+        como las opciones desplegables de cada combo de chip."""
+        if self._txt_file_list is None:
+            return
+
+        txt_dir_str = self._path_edits["txt_base_dir"].text().strip()
+        filenames: list[str] = []
+        if txt_dir_str:
+            txt_dir = Path(txt_dir_str)
+            if txt_dir.exists() and txt_dir.is_dir():
+                filenames = sorted(p.name for p in txt_dir.glob("*.txt"))
+
+        self._txt_file_list.clear()
+        if not filenames:
+            item = QListWidgetItem("(sin ficheros .txt en este directorio)")
+            item.setFlags(Qt.NoItemFlags)
+            self._txt_file_list.addItem(item)
+        else:
+            for name in filenames:
+                self._txt_file_list.addItem(name)
+
+        for combo in self._txt_combo.values():
+            current_text = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(filenames)
+            combo.setCurrentText(current_text)
+            combo.blockSignals(False)
+
+    def _load_configfiles_from_xml(self):
+        """Lee el XML seleccionado (modo solo lectura) y rellena cada
+        combo de chip activo con su configFile actual."""
+        xml_path = self._path_edits["xml_path"].text().strip()
+        if not xml_path or not Path(xml_path).exists():
+            QMessageBox.warning(self, "XML not found",
+                                 "Selecciona primero un XML config file válido.")
+            return
+
+        try:
+            xml_mgr = XmlManager(xml_path, read_only=True)
+            xml_mgr.load()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"No se pudo leer el XML:\n{e}")
+            return
+
+        loaded, missing = 0, []
+        for (hybrid_id, rd53_id), combo in self._txt_combo.items():
+            try:
+                fname = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
+                combo.setCurrentText(fname)
+                loaded += 1
+            except Exception as chip_err:
+                missing.append(f"H{hybrid_id} Chip{rd53_id}")
+                self.logger.warning(
+                    "No se pudo leer configFile de Hybrid %d / RD53A %d: %s",
+                    hybrid_id, rd53_id, chip_err,
+                )
+
+        msg = f"Nombres cargados para {loaded} chip(s) desde el XML."
+        if missing:
+            msg += "\n\nNo encontrados en el XML: " + ", ".join(missing)
+        QMessageBox.information(self, "Load from XML", msg)
 
     # ------------------------------------------------------------------
     # Lógica
@@ -275,7 +559,8 @@ class ConfigTab(QWidget):
             # verificar si el .txt de cada chip existe físicamente en disco.
             txt_base = Path(txt) if txt else None
 
-            # 2. Abrir el XML, activar/desactivar chips, leer configFile y
+            # 2. Abrir el XML, activar/desactivar chips, aplicar renombrados
+            #    de configFile pendientes en la caja TXT, leer configFile y
             #    comprobar existencia del .txt en disco.
             xml_mgr = SystemConfig.create_xml_manager(read_only=False)
             config_files: dict[tuple[int, int], str] = {}
@@ -284,6 +569,17 @@ class ConfigTab(QWidget):
             for (hybrid_id, rd53_id), is_active in sorted(chip_selection.items()):
                 try:
                     xml_mgr.set_chip_enable(hybrid_id, rd53_id, is_active)
+
+                    # Si el usuario ha escrito/elegido un nombre distinto en
+                    # la caja "CHIP TXT CONFIG FILES", lo persistimos en el XML.
+                    combo = self._txt_combo.get((hybrid_id, rd53_id))
+                    if combo is not None:
+                        new_name = combo.currentText().strip()
+                        if new_name:
+                            current_name = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
+                            if new_name != current_name:
+                                xml_mgr.set_chip_config_file(hybrid_id, rd53_id, new_name)
+
                     fname = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
 
                     if fname:
@@ -300,7 +596,7 @@ class ConfigTab(QWidget):
                     else:
                         file_symbol = "✗"
 
-                    status = "ON " if is_active else "OFF"
+                    status = "ON" if is_active else "OFF"
                     xml_log_lines.append(
                         f"H{hybrid_id} Chip{rd53_id:>2}    [{status}]"
                         f"   {fname or '(no configFile)':<28}"
@@ -321,6 +617,7 @@ class ConfigTab(QWidget):
                 Path(plots).mkdir(parents=True, exist_ok=True)
 
             self._update_summary(ph2_acf, xml, col_start, col_end, xml_log_lines)
+            self._refresh_txt_file_list()
             self.config_applied.emit()
             self.logger.info(
                 "Configuración aplicada: cols=%d-%d chips=%s",
@@ -366,7 +663,7 @@ class ConfigTab(QWidget):
     # Persistencia entre sesiones
     # ------------------------------------------------------------------
     def _save_settings(self):
-        """Guarda paths y chips activos en ~/.rd53a_gui_settings.json"""
+        """Guarda paths, chips activos y nombres de .txt en ~/.rd53a_gui_settings.json"""
         try:
             settings = {
                 "paths": {k: v.text() for k, v in self._path_edits.items()},
@@ -376,6 +673,11 @@ class ConfigTab(QWidget):
                 },
                 "col_start": self._col_start.text(),
                 "col_end":   self._col_end.text(),
+                "txt_names": {
+                    f"{h},{r}": combo.currentText()
+                    for (h, r), combo in self._txt_combo.items()
+                    if combo.currentText().strip()
+                },
             }
             with open(SETTINGS_FILE, "w") as f:
                 json.dump(settings, f, indent=2)
@@ -384,7 +686,7 @@ class ConfigTab(QWidget):
             self.logger.warning("Could not save settings: %s", e)
 
     def _load_settings(self):
-        """Carga paths y chips desde ~/.rd53a_gui_settings.json si existe."""
+        """Carga paths, chips y nombres de .txt desde ~/.rd53a_gui_settings.json si existe."""
         if not SETTINGS_FILE.exists():
             return
         try:
@@ -399,6 +701,12 @@ class ConfigTab(QWidget):
                 h, c = map(int, key.split(","))
                 if (h, c) in self._chip_checks:
                     self._chip_checks[(h, c)].setChecked(checked)
+
+            for key, name in settings.get("txt_names", {}).items():
+                h, r = map(int, key.split(","))
+                combo = self._txt_combo.get((h, r))
+                if combo is not None and name:
+                    combo.setCurrentText(name)
 
             if "col_start" in settings:
                 self._col_start.setText(settings["col_start"])
