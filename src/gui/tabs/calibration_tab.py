@@ -241,7 +241,7 @@ class CalibrationTab(QWidget):
         header.addWidget(title)
         header.addStretch()
         clear_btn = QPushButton("Clear")
-        clear_btn.setMaximumWidth(60)
+        clear_btn.setMaximumWidth(100)
         clear_btn.clicked.connect(lambda: self._log.clear())
         header.addWidget(clear_btn)
         layout.addLayout(header)
