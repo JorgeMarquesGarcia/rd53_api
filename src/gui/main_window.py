@@ -235,6 +235,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self._start_state_polling()
         self.calibration_tab.plots_loading.connect(self._on_plots_loading)
+        self.analysis_tab.plots_loading.connect(self._on_plots_loading)
 
         self.logger.info("MainWindow inicializado.")
 
@@ -302,6 +303,7 @@ class MainWindow(QMainWindow):
             f"| Cols: {SystemConfig.get_active_columns()}"
         )
         self.acquisition_tab.on_config_applied()
+        self.analysis_tab.on_config_applied()
         self.logger.info("Configuración aplicada correctamente.")
 
     def _on_plots_loading(self, loading: bool):

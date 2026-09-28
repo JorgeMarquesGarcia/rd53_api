@@ -1,6 +1,7 @@
-"""results_finder.py - Búsqueda de los ficheros más recientes en la carpeta Results.
+"""results_finder.py - Búsqueda de ficheros en la carpeta Results y deducción
+del tipo de análisis a partir del nombre.
 
-Sin dependencias de Qt ni de SystemConfig: recibe la carpeta como argumento
+Sin dependencias de Qt, ROOT ni SystemConfig: recibe las rutas como argumento
 para poder testearse de forma aislada.
 """
 from __future__ import annotations
@@ -14,18 +15,33 @@ logger = logging.getLogger(__name__)
 ROOT_EXT = ".root"
 RAW_EXT = ".raw"
 
-# Sufijos de nombre de los ficheros .root que producen los scans de calibración
-# (los mismos que usa CalibrationTab._load_plots en pattern_map)
-CALIBRATION_NAME_PATTERNS: tuple[str, ...] = (
-    "SCurve",
-    "ThrEqualization",
-    "NoiseScan",
-    "PixelAlive",
-)
+# Fuente única: clave de análisis -> sufijo en el nombre del .root
+# (Run000193_SCurve.root, Run000192_NoiseScan.root, ...)
+ANALYSIS_FILE_SUFFIX: dict[str, str] = {
+    "scurve":     "SCurve",
+    "threqu":     "ThrEqualization",
+    "noise":      "NoiseScan",
+    "pixelalive": "PixelAlive",
+}
 
-ACQUISITION_NAME_PATTERNS: tuple[str, ...] = (
-    "Physics",
-)
+# Ficheros .root de calibración
+CALIBRATION_NAME_PATTERNS: tuple[str, ...] = tuple(ANALYSIS_FILE_SUFFIX.values())
+
+# Ficheros de adquisición: Run000XXX_Physics_Board000.raw / .root
+ACQUISITION_NAME_PATTERNS: tuple[str, ...] = ("_Physics_Board",)
+
+
+def detect_analysis(path: str | Path) -> str | None:
+    """Deduce la clave de análisis ('scurve', 'threqu', ...) a partir del nombre.
+
+    Devuelve None si el nombre no corresponde a ningún análisis de calibración.
+    """
+    name = Path(path).name.lower()
+    for key, suffix in ANALYSIS_FILE_SUFFIX.items():
+        if suffix.lower() in name:
+            return key
+    return None
+
 
 def latest_files(
     directory: str | Path,

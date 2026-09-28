@@ -5,8 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QCheckBox,
     QListWidget, QListWidgetItem, QTextEdit,
-    QTabWidget, QScrollArea, QGridLayout,
-    QSpacerItem, QSizePolicy, QProgressBar,
+    QTabWidget, QSpacerItem, QSizePolicy, QProgressBar,
 )
 
 from pathlib import Path
@@ -21,15 +20,10 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt5.QtGui import QFont, QColor
 
 from src.config.system_config import SystemConfig
-from src.plotter.plotter_base import PlotterBase, ANALYSIS_PLOTS
-from src.plotter.heatmap import (
-    PixelAlivePlotter, ToT2DPlotter, TDAC2DPlotter, Masked2DPlotter
-)
-from src.plotter.histogram1d import (
-    Threshold1DPlotter, Occ1DPlotter, ToT1DPlotter,
-    TDAC1DPlotter, ThrEqualizationPlotter
-)
-from src.plotter.scurve import SCurvePlotter
+
+
+from src.core.results_finder import ANALYSIS_FILE_SUFFIX
+from src.plotter.calibration_view import build_chip_plots_widget, discover_chips
 
 # ---------------------------------------------------------------------------
 # Análisis disponibles Hay que añadir que el usuario pueda modificar Vthreshold_LIN
@@ -41,20 +35,7 @@ AVAILABLE_ANALYSES = [
     ("pixelalive", "Pixel Alive",                "Verify pixel responsivity with injection"),
 ]
 
-# Canvas names por plot_key — igual que en test_plotter
-CANVAS_NAMES = {
-    "SCurves":         "D_B(0)_O(0)_H({h})_SCurves_Chip({c})",
-    "Threshold1D":     "D_B(0)_O(0)_H({h})_Threshold1D_Chip({c})",
-    "ThrEqualization": "D_B(0)_O(0)_H({h})_ThrEqualization_Chip({c})",
-    "TDAC1D":          "D_B(0)_O(0)_H({h})_TDAC1D_Chip({c})",
-    "TDAC2D":          "D_B(0)_O(0)_H({h})_TDAC2D_Chip({c})",
-    "Masked2D":        "D_B(0)_O(0)_H({h})_Masked2D_Chip({c})",
-    "PixelAlive":      "D_B(0)_O(0)_H({h})_PixelAlive_Chip({c})",
-    "ToT2D":           "D_B(0)_O(0)_H({h})_ToT2D_Chip({c})",
-    "ToT1D":           "D_B(0)_O(0)_H({h})_ToT1D_Chip({c})",
-}
 
-MASKED_PLOTTERS = {"PixelAlive", "ToT2D", "TDAC2D", "Masked2D"}
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +248,12 @@ class CalibrationTab(QWidget):
             "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
         )
         layout.addWidget(self._plot_tabs)
+        self._plot_tabs = QTabWidget()
+        self._plot_tabs.setTabsClosable(True)
+        self._plot_tabs.tabCloseRequested.connect(self._close_plot_tab)
+        self._plot_tabs.setStyleSheet(
+        "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
+        )
 
         return panel
 
@@ -335,20 +322,11 @@ class CalibrationTab(QWidget):
         self._worker = None
 
     def _load_plots(self, analysis: str, run_number: int):
-        """Carga los plots del análisis terminado en el panel de resultados."""
-        from pathlib import Path
-
-        pattern_map = {
-            "scurve":     "SCurve",
-            "threqu":     "ThrEqualization",
-            "noise":      "NoiseScan",
-            "pixelalive": "PixelAlive",
-            #"fine_noise": "Physics_Board000"
-        }
-        pattern  = pattern_map.get(analysis, "")
-        run_str  = str(run_number).zfill(6)
-        results_dir = Path(SystemConfig.get_txt_base_dir()) / "Results" #Esto hay que cambiarlo, el usuario ya le da el path de ese directorio
-        root_path   = results_dir / f"Run{run_str}_{pattern}.root"
+        """Carga los plots del análisis terminado: una subpestaña por chip."""
+        pattern = ANALYSIS_FILE_SUFFIX.get(analysis, "")
+        run_str = str(run_number).zfill(6)
+        results_dir = Path(SystemConfig.get_txt_base_dir()) / "Results"  # (pendiente de cambiar, como ya anotabas)
+        root_path = results_dir / f"Run{run_str}_{pattern}.root"
 
         if not root_path.exists():
             self._log_write(f"[WARN] ROOT file not found: {root_path.name}")
@@ -358,66 +336,34 @@ class CalibrationTab(QWidget):
 
         try:
             col_start, col_end = SystemConfig.get_active_columns()
-            chip_dir = SystemConfig.get_chip_dir()
+            chips = discover_chips(root_path)
         except Exception as e:
             self._log_write(f"[WARN] Cannot load plots: {e}")
             return
 
-        root_path = str(root_path)
-
-        keys = ANALYSIS_PLOTS.get(analysis, [])
-        if not keys:
+        if not chips:
+            self._log_write(f"[WARN] No chips found in {root_path.name}")
             return
 
-        tab_widget = QWidget()
-        grid = QGridLayout(tab_widget)
-        grid.setSpacing(8)
-        col_count = 2
-
-        for idx, key in enumerate(keys):
-            canvas_tmpl = CANVAS_NAMES.get(key)
-            if canvas_tmpl is None:
-                continue
-
-            # Usar primer chip activo para el canvas path
-            active = SystemConfig.get_active_hybrids()
-            h = active[0] if active else 0
-            c = SystemConfig.get_active_chips()[0] if SystemConfig.get_active_chips() else 0
-            canvas_name = canvas_tmpl.format(h=h, c=c)
-            canvas_path = f"{chip_dir}/{canvas_name}"
-
-            try:
-                if key in MASKED_PLOTTERS:
-                    cls_map = {
-                        "PixelAlive": PixelAlivePlotter,
-                        "ToT2D":      ToT2DPlotter,
-                        "TDAC2D":     TDAC2DPlotter,
-                        "Masked2D":   Masked2DPlotter,
-                    }
-                    plotter = cls_map[key](root_path, canvas_path, col_start, col_end)
-                else:
-                    plotter = PlotterBase.for_key(key, root_path, canvas_path)
-
-                widget = plotter.get_canvas()
-                grid.addWidget(widget, idx // col_count, idx % col_count)
-            except Exception as e:
-                lbl = QLabel(f"⚠ Error en '{key}':\n{e}")
-                lbl.setAlignment(Qt.AlignCenter)
-                lbl.setWordWrap(True)
-                lbl.setStyleSheet(
-                    "color: #B71C1C; background: #1A0000; "
-                    "border: 1px solid #4A0000; padding: 8px;"
-                )
-                grid.addWidget(lbl, idx // col_count, idx % col_count)
-                self._log_write(f"[WARN] Plot '{key}': {e}")
-
-        scroll = QScrollArea()
-        scroll.setWidget(tab_widget)
-        scroll.setWidgetResizable(True)
+        inner = QTabWidget()
+        for h, c in chips:
+            widget = build_chip_plots_widget(
+                analysis, str(root_path), h, c, col_start, col_end,
+                log=self._log_write,
+            )
+            inner.addTab(widget, f"H{h} · Chip {c}")
 
         label = dict((k, n) for k, n, _ in AVAILABLE_ANALYSES).get(analysis, analysis.upper())
-        self._plot_tabs.addTab(scroll, label)
-        self._plot_tabs.setCurrentWidget(scroll)
+        self._plot_tabs.addTab(inner, label)
+        self._plot_tabs.setCurrentWidget(inner)
+        self._log_write(f"[OK]   {len(chips)} chip(s) plotted.")
+
+    def _close_plot_tab(self, index: int):
+        """Cierra una pestaña de resultados y libera sus canvas."""
+        widget = self._plot_tabs.widget(index)
+        self._plot_tabs.removeTab(index)
+        if widget is not None:
+            widget.deleteLater()
 
     # ------------------------------------------------------------------
     # Helper log
