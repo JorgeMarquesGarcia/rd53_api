@@ -18,3 +18,9 @@ Dockerfile
 requirements.txt
 run_linux.sh
 run_windows.bat
+*.png
+src/backup/
+src/test/
+PAToken.txt 
+CMSIT_RD53A*
+RD53A_GUI/
