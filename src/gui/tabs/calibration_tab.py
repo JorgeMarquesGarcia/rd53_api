@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QCheckBox,
     QListWidget, QListWidgetItem, QTextEdit,
-    QTabWidget, QSpacerItem, QSizePolicy, QProgressBar,
+    QTabWidget, QTabBar, QToolButton, QSpacerItem, QSizePolicy, QProgressBar,
 )
 
 from pathlib import Path
@@ -64,8 +64,11 @@ class CalibrationWorker(QObject):
             "pixelalive": PixelAliveScan,
         }
 
-        hybrid_id = SystemConfig.get_active_hybrids()[0]
-        chip_id   = SystemConfig.get_active_chips()[0]
+        active_chips = SystemConfig.get_active_hw_chips()
+        if not active_chips:
+            self.log_message.emit("[ERROR] No active chips configured.")
+            self.all_finished.emit()
+            return
 
         # Configurar num_manager con la ruta al RunNumber.txt
         run_number_path = Path(SystemConfig.get_txt_base_dir()) / "RunNumber.txt"
@@ -76,8 +79,10 @@ class CalibrationWorker(QObject):
                 self.log_message.emit("[ABORTED] Sequence aborted by user.")
                 break
 
-            self.log_message.emit(f"\n[START] Running {analysis.upper()} "
-                                  f"(Hybrid {hybrid_id}, Chip {chip_id})...")
+            self.log_message.emit(
+                f"\n[START] Running {analysis.upper()} "
+                f"with XML active chips={active_chips}..."
+            )
             scan_cls = SCAN_MAP.get(analysis)
             if scan_cls is None:
                 self.log_message.emit(f"[ERROR] Unknown analysis: {analysis}")
@@ -89,7 +94,8 @@ class CalibrationWorker(QObject):
                 run_number = num_mgr.get()
                 self.log_message.emit(f"[INFO]  Run number: {num_mgr.get_formatted()}")
 
-                scan = scan_cls(hybrid_id=hybrid_id, rd53_id=chip_id)
+                # El XML ya contiene todos los chips activos; este scan debe correr una sola vez.
+                scan = scan_cls()
                 self._current_scan = scan
                 scan._line_callback = lambda line: self.log_message.emit(f"  {line}")
                 output = scan.run()
@@ -249,6 +255,9 @@ class CalibrationTab(QWidget):
         self._plot_tabs.tabCloseRequested.connect(self._close_plot_tab)
         self._plot_tabs.setStyleSheet(
             "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
+            "QTabBar::tab:selected { background: #1A1D23; color: #00E5FF; }"
+            "QTabBar::close-button { width: 12px; height: 12px; background: transparent; border: none; }"
+            "QTabBar::close-button:hover { background: transparent; }"
         )
         layout.addWidget(self._plot_tabs)
 
@@ -364,10 +373,24 @@ class CalibrationTab(QWidget):
             self._close_plot_tab(self._plot_tabs.indexOf(old))
 
         idx = self._plot_tabs.addTab(inner, root_path.stem)
+        self._set_tab_close_button(self._plot_tabs, idx)
         self._plot_tabs.setTabToolTip(idx, str(root_path))
         self._plot_tabs.setCurrentIndex(idx)
         self._file_tabs[str(root_path)] = inner
         self._log_write(f"[OK]   {len(chips)} chip(s) plotted.")
+
+    def _set_tab_close_button(self, tabs: QTabWidget, index: int) -> None:
+        button = QToolButton(tabs)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.ArrowCursor)
+        button.setToolTip("Close tab")
+        button.setIcon(tabs.style().standardIcon(tabs.style().SP_TitleBarCloseButton))
+        button.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 0px; }"
+            "QToolButton:hover { background: transparent; }"
+        )
+        button.clicked.connect(lambda *_: self._close_plot_tab(index))
+        tabs.tabBar().setTabButton(index, QTabBar.RightSide, button)
 
     def _close_plot_tab(self, index: int):
         """Cierra una pestaña de resultados y libera sus canvas."""

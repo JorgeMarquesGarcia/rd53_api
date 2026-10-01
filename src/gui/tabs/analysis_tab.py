@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
-    QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget,
+    QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget, QTabBar, QToolButton,
     QListWidget, QListWidgetItem, QTextEdit,
     QFileDialog, QButtonGroup,
 )
@@ -240,6 +240,12 @@ class AnalysisTab(QWidget):
         self._results_tabs = QTabWidget()
         self._results_tabs.setTabsClosable(True)
         self._results_tabs.tabCloseRequested.connect(self._close_result_tab)
+        self._results_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
+            "QTabBar::tab:selected { background: #1A1D23; color: #00E5FF; }"
+            "QTabBar::close-button { width: 12px; height: 12px; background: transparent; border: none; }"
+            "QTabBar::close-button:hover { background: transparent; }"
+        )
         self._results_tabs.hide()
         layout.addWidget(self._results_tabs, 1)
         return panel
@@ -467,11 +473,25 @@ class AnalysisTab(QWidget):
             self._close_result_tab(self._results_tabs.indexOf(old))
 
         idx = self._results_tabs.addTab(inner, path.stem)
+        self._set_tab_close_button(self._results_tabs, idx)
         self._results_tabs.setTabToolTip(idx, str(path))
         self._results_tabs.setCurrentIndex(idx)
         self._file_tabs[str(path)] = inner
         self._update_results_visibility()
         self._log_write("[OK]   Plots ready.")
+
+    def _set_tab_close_button(self, tabs: QTabWidget, index: int) -> None:
+        button = QToolButton(tabs)
+        button.setAutoRaise(True)
+        button.setCursor(Qt.ArrowCursor)
+        button.setToolTip("Close tab")
+        button.setIcon(tabs.style().standardIcon(tabs.style().SP_TitleBarCloseButton))
+        button.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 0px; }"
+            "QToolButton:hover { background: transparent; }"
+        )
+        button.clicked.connect(lambda *_: self._close_result_tab(index))
+        tabs.tabBar().setTabButton(index, QTabBar.RightSide, button)
 
     def _close_result_tab(self, index: int):
         if index < 0:
