@@ -128,6 +128,7 @@ class CalibrationTab(QWidget):
         self._checks: dict[str, QCheckBox] = {}
         self._worker: CalibrationWorker | None = None
         self._thread: QThread | None = None
+        self._file_tabs: dict[str, QWidget] = {}   # ruta .root -> pestaña de resultados
         self._build_ui()
         self.logger.info("CalibrationTab inicializado.")
 
@@ -244,16 +245,12 @@ class CalibrationTab(QWidget):
         layout.addWidget(title)
 
         self._plot_tabs = QTabWidget()
+        self._plot_tabs.setTabsClosable(True)
+        self._plot_tabs.tabCloseRequested.connect(self._close_plot_tab)
         self._plot_tabs.setStyleSheet(
             "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
         )
         layout.addWidget(self._plot_tabs)
-        self._plot_tabs = QTabWidget()
-        self._plot_tabs.setTabsClosable(True)
-        self._plot_tabs.tabCloseRequested.connect(self._close_plot_tab)
-        self._plot_tabs.setStyleSheet(
-        "QTabBar::tab { padding: 4px 12px; font-size: 10px; }"
-        )
 
         return panel
 
@@ -325,7 +322,15 @@ class CalibrationTab(QWidget):
         """Carga los plots del análisis terminado: una subpestaña por chip."""
         pattern = ANALYSIS_FILE_SUFFIX.get(analysis, "")
         run_str = str(run_number).zfill(6)
-        results_dir = Path(SystemConfig.get_txt_base_dir()) / "Results"  # (pendiente de cambiar, como ya anotabas)
+        # Carpeta "ROOT output directory" de la pestaña Config (misma que Analysis/Acquisition)
+        try:
+            results_dir = SystemConfig.get_root_path()
+        except Exception:
+            self._log_write(
+                "[WARN] 'ROOT output directory' is not set in the Config tab — "
+                "cannot locate the results."
+            )
+            return
         root_path = results_dir / f"Run{run_str}_{pattern}.root"
 
         if not root_path.exists():
@@ -353,15 +358,26 @@ class CalibrationTab(QWidget):
             )
             inner.addTab(widget, f"H{h} · Chip {c}")
 
-        label = dict((k, n) for k, n, _ in AVAILABLE_ANALYSES).get(analysis, analysis.upper())
-        self._plot_tabs.addTab(inner, label)
-        self._plot_tabs.setCurrentWidget(inner)
+        # Volver a dibujar el mismo fichero reemplaza su pestaña en lugar de duplicarla
+        old = self._file_tabs.get(str(root_path))
+        if old is not None:
+            self._close_plot_tab(self._plot_tabs.indexOf(old))
+
+        idx = self._plot_tabs.addTab(inner, root_path.stem)
+        self._plot_tabs.setTabToolTip(idx, str(root_path))
+        self._plot_tabs.setCurrentIndex(idx)
+        self._file_tabs[str(root_path)] = inner
         self._log_write(f"[OK]   {len(chips)} chip(s) plotted.")
 
     def _close_plot_tab(self, index: int):
         """Cierra una pestaña de resultados y libera sus canvas."""
+        if index < 0:
+            return
         widget = self._plot_tabs.widget(index)
         self._plot_tabs.removeTab(index)
+        for key, w in list(self._file_tabs.items()):
+            if w is widget:
+                del self._file_tabs[key]
         if widget is not None:
             widget.deleteLater()
 

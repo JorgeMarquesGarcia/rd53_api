@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QObject
 
 from src.config.system_config import SystemConfig
+from src.config.acquisition_config import AcquisitionConfig
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -26,6 +27,20 @@ LIVE_REFRESH_MS: int       = 60_000          # ciclo de visualización: cada 60 
 DAQ_POLL_INTERVAL: float   = 2.0             # segundos entre polls del .raw (rotación)
 DAQ_MAX_RETRIES: int       = 5               # reintentos si el DAQ no arranca
 DAQ_RETRY_DELAY: float     = 8.0             # segundos entre reintentos
+
+# Vthreshold_LIN: rango válido del spinbox y valor centinela "sin valor".
+# El centinela (-1) se muestra como "—" y bloquea START; NUNCA se envía al XML.
+VTHRESH_MIN: int           = 0
+VTHRESH_MAX: int           = 1000
+VTHRESH_MISSING: int       = -1
+
+# Recuadro de aviso (amarillo señal de tráfico, sutil). Distinto de #FFB300,
+# que ya identifica el estado CALIBRATION en la barra de estado.
+PHYSICS_BOX_STYLE: str = (
+    "QGroupBox#physics_group { "
+    "border: 1px solid rgba(255, 214, 0, 140); border-radius: 4px; }"
+)
+VTHRESH_MISSING_STYLE: str = "QSpinBox { border: 1px solid #FF5252; }"
 
 
 # ===========================================================================
@@ -482,6 +497,9 @@ class AcquisitionTab(QWidget):
         super().__init__(parent)
         self.logger = logging.getLogger("AcquisitionTab")
 
+        # Estado — UI (se consulta durante _build_ui, debe existir antes)
+        self._running: bool = False
+
         # Estado — Timed
         self._worker: QObject | None = None
         self._thread: QThread | None = None
@@ -535,7 +553,7 @@ class AcquisitionTab(QWidget):
         layout = QVBoxLayout(panel)
         layout.setSpacing(10)
 
-        title = QLabel("ACQUISITION CONTROL")
+        title = QLabel("ACQUISITION CONFIG")
         title.setObjectName("section_title")
         layout.addWidget(title)
 
@@ -721,6 +739,17 @@ class AcquisitionTab(QWidget):
         chips = SystemConfig.get_active_hw_chips()
         if not chips:
             self._log_write("[ERROR] No active chips. Configure chips in the Config tab.")
+            return
+
+        # El XML manda salvo en los chips cuyo valor el usuario ha editado a mano.
+        self._sync_vthresh_from_xml()
+        missing = self._missing_vthresh_chips()
+        if missing:
+            self._log_write(
+                f"[ERROR] Vthreshold_LIN not available for {missing}. "
+                "Check the XML selected in Config or set the value manually."
+            )
+            self._update_start_enabled()
             return
 
         if self._mode_group.checkedId() == 0:
@@ -960,7 +989,8 @@ class AcquisitionTab(QWidget):
 
     def _set_running_ui(self, running: bool):
         is_standalone = self._mode_group.checkedId() == 1
-        self._btn_start.setEnabled(not running)
+        self._running = running
+        self._update_start_enabled()
         self._btn_abort.setEnabled(running)
         self._btn_stop_acq.setEnabled(running and is_standalone)
         self._btn_show_traj.setEnabled(False)
@@ -976,6 +1006,10 @@ class AcquisitionTab(QWidget):
 
     def _build_physics_params_group(self) -> QGroupBox:
         group  = QGroupBox("PHYSICS PARAMETERS")
+        # Recuadro amarillo sutil: el selector por objectName evita que el
+        # estilo se propague a los widgets hijos.
+        group.setObjectName("physics_group")
+        group.setStyleSheet(PHYSICS_BOX_STYLE)
         layout = QVBoxLayout(group)
         layout.setSpacing(8)
 
@@ -1002,14 +1036,36 @@ class AcquisitionTab(QWidget):
         layout.addWidget(self._vthresh_scroll)
 
         self._vthresh_spinboxes: dict[tuple[int, int], QSpinBox] = {}
+        # Chips cuyo threshold ha sido editado a mano por el usuario: el refresco
+        # previo al START no los pisa con el valor del XML.
+        self._vthresh_manual: set[tuple[int, int]] = set()
         self._refresh_vthresh_spinboxes()
         return group
 
+    # ------------------------------------------------------------------
+    # Vthreshold_LIN: origen único = XML seleccionado en Config
+    # ------------------------------------------------------------------
+
+    def _read_xml_thresholds(
+        self, chips: list[tuple[int, int]]
+    ) -> dict[tuple[int, int], int]:
+        """Lee Vthreshold_LIN del XML. Solo devuelve los chips que se pudieron leer."""
+        try:
+            return AcquisitionConfig.get_chip_thresholds(chips)
+        except Exception as e:
+            self.logger.warning("Cannot read Vthreshold_LIN from XML: %s", e)
+            return {}
+
     def _refresh_vthresh_spinboxes(self) -> None:
+        """Reconstruye los spinboxes y los rellena desde el XML.
+
+        Se llama al aplicar la configuración: descarta cualquier edición manual
+        previa (decisión acordada: el XML es la fuente de verdad).
+        """
         from src.chip.detector_geometry import DETECTOR_LAYOUT
 
-        prev_values = {k: s.value() for k, s in self._vthresh_spinboxes.items()}
         self._vthresh_spinboxes.clear()
+        self._vthresh_manual.clear()
 
         inner        = QWidget()
         inner_layout = QVBoxLayout(inner)
@@ -1018,12 +1074,14 @@ class AcquisitionTab(QWidget):
 
         try:
             active_set = set(SystemConfig.get_active_hw_chips())
+            xml_values = self._read_xml_thresholds(sorted(active_set))
             for layer in DETECTOR_LAYOUT.values():
                 hybrid = layer["hybrid"]
                 offset = layer["rd53_offset"]
                 for chip_local in layer["chips"]:
                     rd53_hw = chip_local + offset
-                    if (hybrid, rd53_hw) not in active_set:
+                    key = (hybrid, rd53_hw)
+                    if key not in active_set:
                         continue
                     row = QHBoxLayout()
                     lbl = QLabel(f"  H{hybrid} . Chip {rd53_hw}  ({layer['label']}):")
@@ -1031,13 +1089,18 @@ class AcquisitionTab(QWidget):
                     lbl.setMinimumWidth(200)
                     row.addWidget(lbl)
                     spin = QSpinBox()
-                    spin.setRange(0, 1000)
-                    spin.setValue(prev_values.get((hybrid, rd53_hw), 350))
+                    # El mínimo es el centinela: se muestra como "—" (sin valor).
+                    spin.setRange(VTHRESH_MISSING, VTHRESH_MAX)
+                    spin.setSpecialValueText("—")
                     spin.setMaximumWidth(80)
+                    self._set_vthresh_value(spin, key, xml_values.get(key))
+                    spin.valueChanged.connect(
+                        lambda _v, k=key: self._on_vthresh_edited(k)
+                    )
                     row.addWidget(spin)
                     row.addStretch()
                     inner_layout.addLayout(row)
-                    self._vthresh_spinboxes[(hybrid, rd53_hw)] = spin
+                    self._vthresh_spinboxes[key] = spin
         except Exception:
             inner_layout.addWidget(QLabel("  Configure chips first."))
 
@@ -1045,6 +1108,61 @@ class AcquisitionTab(QWidget):
             inner_layout.addWidget(QLabel("  No active chips — configure in Config tab."))
 
         self._vthresh_scroll.setWidget(inner)
+        self._update_start_enabled()
+
+    def _sync_vthresh_from_xml(self) -> None:
+        """Relee el XML justo antes de lanzar (p. ej. si una calibración lo cambió).
+
+        Solo actualiza los chips que el usuario NO ha editado a mano.
+        """
+        xml_values = self._read_xml_thresholds(list(self._vthresh_spinboxes))
+        for key, spin in self._vthresh_spinboxes.items():
+            if key in self._vthresh_manual:
+                continue
+            self._set_vthresh_value(spin, key, xml_values.get(key))
+        self._update_start_enabled()
+
+    def _set_vthresh_value(self, spin: QSpinBox, key: tuple[int, int], value: int | None) -> None:
+        """Asigna un valor leído del XML sin marcarlo como edición manual."""
+        if value is not None and not (VTHRESH_MIN <= value <= VTHRESH_MAX):
+            self.logger.warning(
+                "Vthreshold_LIN=%s out of range for chip %s — treated as missing.", value, key
+            )
+            value = None
+        spin.blockSignals(True)
+        spin.setValue(VTHRESH_MISSING if value is None else value)
+        spin.blockSignals(False)
+        self._style_vthresh_spin(spin)
+
+    def _style_vthresh_spin(self, spin: QSpinBox) -> None:
+        if spin.value() == VTHRESH_MISSING:
+            spin.setStyleSheet(VTHRESH_MISSING_STYLE)
+            spin.setToolTip("Vthreshold_LIN not found in the XML — set it manually.")
+        else:
+            spin.setStyleSheet("")
+            spin.setToolTip(
+                "Loaded from the XML selected in Config. If you edit it, the new "
+                "value is written to the XML when the acquisition starts."
+            )
+
+    def _on_vthresh_edited(self, key: tuple[int, int]) -> None:
+        self._vthresh_manual.add(key)
+        spin = self._vthresh_spinboxes.get(key)
+        if spin is not None:
+            self._style_vthresh_spin(spin)
+        self._update_start_enabled()
+
+    def _missing_vthresh_chips(self) -> list[tuple[int, int]]:
+        return [k for k, s in self._vthresh_spinboxes.items() if s.value() == VTHRESH_MISSING]
+
+    def _update_start_enabled(self) -> None:
+        """START solo está activo si no hay adquisición en curso y todos los
+        chips activos tienen un Vthreshold_LIN válido."""
+        missing = self._missing_vthresh_chips()
+        self._btn_start.setEnabled(not self._running and not missing)
+        self._btn_start.setToolTip(
+            f"Vthreshold_LIN missing for: {missing}" if missing else ""
+        )
 
     # ==================================================================
     # Análisis post-scan (modo timed)
