@@ -248,7 +248,8 @@ class AnalysisTab(QWidget):
     # Reglas por modo
     # ==================================================================
     def _allowed_extensions(self) -> tuple[str, ...]:
-        return (ROOT_EXT)
+        # Ambos modos analizan únicamente ficheros .root
+        return (ROOT_EXT,)
 
     def _name_patterns(self) -> tuple[str, ...]:
         if self.mode == MODE_CALIBRATION:

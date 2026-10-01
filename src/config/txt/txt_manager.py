@@ -15,9 +15,9 @@ class SaveMode(Enum):
     NEWFILE   = auto()
 
 class TxtManager(BaseConfigManager):
-    def __init__(self, base_dir: str, chip_id: str):
+    def __init__(self, base_dir: str, chip_id: str, filename: str | None = None):
         self._base_dir = Path(base_dir)
-        self._txt_name = f"CMSIT_RD53A_{chip_id}.txt" #Remember to save chip_id as F7, H4, F5. {Chip_identifier}{Position_identifier}
+        self._txt_name = filename or f"CMSIT_RD53A_{chip_id}.txt"
         self._filepath = self._build_path(self._txt_name)
         self.logger = logging.getLogger(__name__)
         self._loaded = False

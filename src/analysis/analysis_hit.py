@@ -58,8 +58,8 @@ class HitAnalysis(BaseAnalysis):
         coincidence_hits = self.coincidence()
         self.logger.info(f"Coincidence filter applied: {len(coincidence_hits)} events with hits in other chips")
 
-        tot_filter = self._tot_filter(coincidence_hits, tot_threshold=2)
-        self.logger.info(f"ToT filter applied: {len(tot_filter)} events with ToT >= 2")
+        tot_filter = self._tot_filter(coincidence_hits, tot_threshold=1)
+        self.logger.info(f"ToT filter applied: {len(tot_filter)} events with ToT >= 1")
         hits = tot_filter
         self._analyzed = True
         return hits
@@ -87,12 +87,12 @@ class HitAnalysis(BaseAnalysis):
             data = self.trigger_data
         return data[ak.sum(data.RD53_frame_event_nhits[:, 1:], axis=1) >= 1]
 
-    def filter_tot(self, data=None, tot_threshold=3):
+    def filter_tot(self, data=None, tot_threshold=1):
         """Filtra eventos cuyo ToT cumple el umbral definido."""
         self._analyzed = True
         return self._tot_filter(data=data, tot_threshold=tot_threshold)
   
-    def _tot_filter(self, data=None, tot_threshold=3):
+    def _tot_filter(self, data=None, tot_threshold=1):
         """Implementa el filtro por ToT."""
         if data is None:
             data = self.trigger_data
