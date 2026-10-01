@@ -23,9 +23,7 @@ from src.config.system_config import SystemConfig
 
 RAW_SIZE_LIMIT_BYTES: int  = 1 * 1024 ** 3   # 1 GB — rotar el fichero .raw
 LIVE_REFRESH_MS: int       = 60_000          # ciclo de visualización: cada 60 s
-DAQ_POLL_INTERVAL: float   = 2.0             # segundos entre polls del .raw (rotación)
-DAQ_MAX_RETRIES: int       = 5               # reintentos si el DAQ no arranca
-DAQ_RETRY_DELAY: float     = 8.0             # segundos entre reintentos
+DAQ_POLL_INTERVAL: float   = 30.0             # segundos entre polls del .raw (rotación)
 
 
 # ===========================================================================
@@ -224,8 +222,7 @@ class StandaloneAcquisitionWorker(QObject):
 
     Ciclo de vida:
       1. Lanza CMSITminiDAQ -f <xml> -c physics -t -1 en un thread interno.
-         Si el comando falla (conexión no levantada, etc.) reintenta hasta
-         DAQ_MAX_RETRIES veces con DAQ_RETRY_DELAY segundos de espera.
+          Si el comando falla, se detiene y deja el reinicio al usuario.
       2. Hace polling del .raw cada DAQ_POLL_INTERVAL segundos.
          Emite debug por señal en cada poll.
       3. Cuando el .raw ≥ RAW_SIZE_LIMIT_BYTES:
@@ -311,93 +308,81 @@ class StandaloneAcquisitionWorker(QObject):
 
     def _run_one_cycle(self) -> tuple[bool, Path | None, Path | None]:
         """
-        Lanza el DAQ con -t -1 (con reintentos si falla el arranque),
-        luego espera a que el .raw supere el límite o llegue el abort.
+        Lanza el DAQ con -t -1 una sola vez y luego espera a que el .raw
+        supere el límite o llegue el abort.
 
         Returns (success, xml_path, results_dir).
         """
         from src.acquisition.scans.physics import PhysicsScan
 
-        for attempt in range(1, DAQ_MAX_RETRIES + 1):
+        if self._abort_flag:
+            return False, None, None
+
+        self._dbg("DAQ launch attempt 1/1")
+
+        try:
+            scan = PhysicsScan(
+                chips=self._chips,
+                scan_time=-1,
+                timeout=None,
+                triggers=self._triggers,
+                vthresh_per_chip=self._vthresh_per_chip,
+            )
+            self._current_scan = scan
+            scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
+
+            # Lanzar run() en thread interno para poder hacer polling
+            daq_started = threading.Event()
+            daq_done    = threading.Event()
+            daq_error   = [None]
+
+            def _daq_thread():
+                try:
+                    # Señalamos "arrancado" cuando run() empieza
+                    # (antes de que termine — run() bloquea hasta que el DAQ para)
+                    daq_started.set()
+                    scan.run()
+                except Exception as exc:
+                    daq_error[0] = exc
+                finally:
+                    daq_done.set()
+
+            t = threading.Thread(target=_daq_thread, daemon=True)
+            t.start()
+
+            # Esperar a que el thread arranque efectivamente
+            daq_started.wait(timeout=5)
+            self._dbg("DAQ thread running (attempt 1)")
+
+            # Polling del .raw hasta que supere el límite o abort/fin de DAQ
+            results_dir  = self._resolve_results_dir()
+            raw_path     = self._poll_raw(daq_done, results_dir)
+
             if self._abort_flag:
+                scan.abort()
+                daq_done.wait(timeout=10)
                 return False, None, None
 
-            self._dbg(f"DAQ launch attempt {attempt}/{DAQ_MAX_RETRIES}")
+            if raw_path is not None:
+                # .raw llegó al límite → detener el DAQ de este ciclo
+                size_mb = raw_path.stat().st_size // 1024 ** 2
+                self._dbg(f".raw reached {size_mb} MB — rotating (ending scan cleanly)")
+                scan.end_scan()
+                daq_done.wait(timeout=10)
 
-            try:
-                scan = PhysicsScan(
-                    chips=self._chips,
-                    scan_time=-1,
-                    timeout=None,
-                    triggers=self._triggers,
-                    vthresh_per_chip=self._vthresh_per_chip,
-                )
-                self._current_scan = scan
-                scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
+                xml_path = SystemConfig.get_xml_path()
+                self._dbg(f"Cycle {self._cycle} complete | xml={xml_path} results={results_dir}")
+                return True, xml_path, results_dir
 
-                # Lanzar run() en thread interno para poder hacer polling
-                daq_started = threading.Event()
-                daq_done    = threading.Event()
-                daq_error   = [None]
+            # Si daq_done se activó sin que raw_path sea válido → DAQ terminó solo
+            if daq_done.is_set() and daq_error[0] is not None:
+                self._dbg(f"DAQ thread error: {daq_error[0]}")
 
-                def _daq_thread():
-                    try:
-                        # Señalamos "arrancado" cuando run() empieza
-                        # (antes de que termine — run() bloquea hasta que el DAQ para)
-                        daq_started.set()
-                        scan.run()
-                    except Exception as exc:
-                        daq_error[0] = exc
-                    finally:
-                        daq_done.set()
+        except Exception as e:
+            self._dbg(f"Exception in cycle attempt 1: {e}")
+            self.log_message.emit(f"[STANDALONE ERROR] {e}")
 
-                t = threading.Thread(target=_daq_thread, daemon=True)
-                t.start()
-
-                # Esperar a que el thread arranque efectivamente
-                daq_started.wait(timeout=5)
-                self._dbg(f"DAQ thread running (attempt {attempt})")
-
-                # Polling del .raw hasta que supere el límite o abort/fin de DAQ
-                results_dir  = self._resolve_results_dir()
-                raw_path     = self._poll_raw(daq_done, results_dir)
-
-                if self._abort_flag:
-                    scan.abort()
-                    daq_done.wait(timeout=10)
-                    return False, None, None
-
-                if raw_path is not None:
-                    # .raw llegó al límite → detener el DAQ de este ciclo
-                    size_mb = raw_path.stat().st_size // 1024 ** 2
-                    self._dbg(f".raw reached {size_mb} MB — rotating (ending scan cleanly)")
-                    scan.end_scan()
-                    daq_done.wait(timeout=10)
-
-                    xml_path = SystemConfig.get_xml_path()
-                    self._dbg(f"Cycle {self._cycle} complete | xml={xml_path} results={results_dir}")
-                    return True, xml_path, results_dir
-
-                # Si daq_done se activó sin que raw_path sea válido → DAQ terminó solo
-                if daq_done.is_set():
-                    if daq_error[0] is not None:
-                        self._dbg(f"DAQ thread error: {daq_error[0]}")
-                    else:
-                        self._dbg("DAQ ended on its own (no .raw limit reached)")
-                    # Tratar como fallo de arranque y reintentar
-                    self._dbg(f"Retrying in {DAQ_RETRY_DELAY}s …")
-                    time.sleep(DAQ_RETRY_DELAY)
-                    continue
-
-            except Exception as e:
-                self._dbg(f"Exception in cycle attempt {attempt}: {e}")
-                self.log_message.emit(f"[STANDALONE ERROR] {e}")
-
-                if attempt < DAQ_MAX_RETRIES:
-                    self._dbg(f"Retrying in {DAQ_RETRY_DELAY}s …")
-                    time.sleep(DAQ_RETRY_DELAY)
-
-        self._dbg(f"All {DAQ_MAX_RETRIES} attempts failed — giving up.")
+        self._dbg("Standalone acquisition did not start cleanly — stopping without retry.")
         return False, None, None
 
     # ------------------------------------------------------------------
@@ -415,7 +400,9 @@ class StandaloneAcquisitionWorker(QObject):
         """
         poll_n = 0
         while not self._abort_flag and not daq_done.is_set():
-            time.sleep(DAQ_POLL_INTERVAL)
+            if daq_done.wait(timeout=DAQ_POLL_INTERVAL):
+                break
+
             poll_n += 1
 
             raw_path = self._find_latest_raw(results_dir)
@@ -423,13 +410,13 @@ class StandaloneAcquisitionWorker(QObject):
                 self._dbg(f"[poll #{poll_n}] No .raw found yet in {results_dir}")
                 continue
 
-            size_b  = raw_path.stat().st_size
+            size_b = raw_path.stat().st_size
             size_mb = size_b / 1024 ** 2
             limit_mb = self._raw_size_limit / 1024 ** 2
             self._dbg(
                 f"[poll #{poll_n}] {raw_path.name}  "
                 f"{size_mb:.1f} MB / {limit_mb:.0f} MB  "
-                f"({100*size_b/self._raw_size_limit:.1f}%)"
+                f"({100 * size_b / self._raw_size_limit:.1f}%)"
             )
 
             if size_b >= self._raw_size_limit:
