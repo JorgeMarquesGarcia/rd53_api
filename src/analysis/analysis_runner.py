@@ -78,7 +78,7 @@ class AnalysisRunner:
         """
         if self.noise_analysis is None:
             return 0
-        return len(self.noise_analysis.noisy_pixels) if self.noise_analysis.noisy_pixels else 0
+        return self.noise_analysis.stats["n_noisy_pixels"]
     
     @property
     def results(self) -> AnalysisResult:

@@ -168,7 +168,7 @@ class StateOrchestrator:
             self.last_hit_analysis = None
 
         noise = NoiseAnalysis(root_manager)
-        n_noisy = len(noise.noisy_pixels) if noise.noisy_pixels else 0
+        n_noisy = noise.stats["n_noisy_pixels"]
         SystemConfig.set_noisy_pixels(n_noisy)
 
         if SystemConfig.check_noisy_below_max():

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-NROWS     = 192
-NCOLS     = 400
+from src.chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS
 
 class Mask(object):
     # Definition: col[row]
@@ -13,12 +12,12 @@ class Mask(object):
         self.TDAC   = []
 
     def reset(self):
-        self.enable = [['0' for row in range(NROWS)] for col in range(NCOLS)]
-        self.injEN  = [['0' for row in range(NROWS)] for col in range(NCOLS)]
+        self.enable = [['0' for row in range(SENSOR_ROWS)] for col in range(SENSOR_COLS)]
+        self.injEN  = [['0' for row in range(SENSOR_ROWS)] for col in range(SENSOR_COLS)]
     
     def preset(self, source):
-        self.enable = [['1' for row in range(NROWS)] for col in range(NCOLS)]
-        self.injEN  = [['1' for row in range(NROWS)] for col in range(NCOLS)]
+        self.enable = [['1' for row in range(SENSOR_ROWS)] for col in range(SENSOR_COLS)]
+        self.injEN  = [['1' for row in range(SENSOR_ROWS)] for col in range(SENSOR_COLS)]
         self.hitBUS    = source.hitBUS[:]
         self.registers = source.registers[:]
         self.TDAC      = source.TDAC[:]

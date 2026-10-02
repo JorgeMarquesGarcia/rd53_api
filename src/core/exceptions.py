@@ -1,5 +1,5 @@
 from __future__ import annotations
-from ..core.mask import NROWS, NCOLS
+from ..chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS
 
 
 ##############################################################################
@@ -125,11 +125,11 @@ class TxtInvalidNoisyPixelError(TxtManagerError):
 class TxtInvalidMaskError(TxtManagerError):
     def __init__(self, nrows: int, ncols: int):
         if nrows is not None and ncols is None: 
-            msg = f"Invalid mask dimensions: expected {NROWS} rows, got {nrows}."
+            msg = f"Invalid mask dimensions: expected {SENSOR_ROWS} rows, got {nrows}."
         elif ncols is not None and nrows is None:
-            msg = f"Invalid mask dimensions: expected {NCOLS} columns, got {ncols}."
+            msg = f"Invalid mask dimensions: expected {SENSOR_COLS} columns, got {ncols}."
         else:
-            msg = f"Invalid mask dimensions: expected {NROWS} rows and {NCOLS} columns, got {nrows} rows and {ncols} columns."
+            msg = f"Invalid mask dimensions: expected {SENSOR_ROWS} rows and {SENSOR_COLS} columns, got {nrows} rows and {ncols} columns."
         super().__init__(msg)
     pass
 

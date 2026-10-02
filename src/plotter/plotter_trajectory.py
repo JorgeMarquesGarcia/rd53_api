@@ -6,12 +6,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple
 
+from src.chip.detector_geometry import z_position
+from src.plotter.detector_planes import (
+    CHIP_COLORS, Z_START, Z_END, draw_detector_planes, setup_detector_axes,
+)
+
 logger = logging.getLogger(__name__)
-
-SENSOR_ROWS = 192
-SENSOR_COLS = 400
-
-Z_POSITIONS = {0: 0, 1: 3, 2: 6}
 
 
 class CoincidencePlotter:
@@ -22,85 +22,19 @@ class CoincidencePlotter:
         self.active_chips = active_chips or []
         self.track_count = 0
         self.colors = plt.cm.rainbow(np.linspace(0, 1, 20))
-
-        self.chip_colors = {
-            (0, 0): (0.3, 0.7, 1.0),
-            (1, 0): (0.2, 0.8, 0.2),
-            (1, 1): (1.0, 0.2, 0.2),
-            (1, 2): (1.0, 0.8, 0.0),
-            (1, 3): (0.5, 0.5, 0.5),
-            (2, 0): (0.3, 0.7, 1.0),
-            (2, 1): (0.2, 0.8, 0.2),
-            (2, 2): (1.0, 0.2, 0.2),
-            (2, 3): (1.0, 0.8, 0.0),
-        }
+        self.chip_colors = CHIP_COLORS
 
         plt.ion()
         self.fig = plt.figure(figsize=(12, 9))
         self.ax = self.fig.add_subplot(111, projection='3d')
 
-        self._draw_detector_planes()
+        draw_detector_planes(self.ax, self.active_chips)
         self._setup_axes()
 
         plt.show(block=False)
 
-    def _active_hybrid_ids(self):
-        """Retorna el conjunto de hybrid_ids activos."""
-        return set(h for h, _ in self.active_chips)
-
-    def _draw_detector_planes(self):
-        """Dibuja todos los planos: inactivos muy transparentes, activos opacos."""
-        active_hybrids = self._active_hybrid_ids()
-        active_lanes_by_hybrid = {
-            hybrid_id: set(lane for h, lane in self.active_chips if h == hybrid_id)
-            for hybrid_id in active_hybrids
-        }
-
-        sensor_positions = [
-            (0, '(h,0)', 0,            SENSOR_COLS,   0,            SENSOR_ROWS,   'lightgreen'),
-            (1, '(h,1)', SENSOR_COLS,  2*SENSOR_COLS, 0,            SENSOR_ROWS,   'lightcoral'),
-            (2, '(h,2)', SENSOR_COLS,  2*SENSOR_COLS, SENSOR_ROWS,  2*SENSOR_ROWS, 'lightyellow'),
-            (3, '(h,3)', 0,            SENSOR_COLS,   SENSOR_ROWS,  2*SENSOR_ROWS, 'lightgray'),
-        ]
-
-        # Z=0: sensor único centrado en la matriz 2x2
-        z = Z_POSITIONS[0]
-        x0, x1 = SENSOR_COLS // 2, SENSOR_COLS // 2 + SENSOR_COLS
-        y0, y1 = SENSOR_ROWS // 2, SENSOR_ROWS // 2 + SENSOR_ROWS
-        xx, yy = np.meshgrid([x0, x1], [y0, y1])
-        is_active = 0 in active_hybrids
-        self.ax.plot_surface(xx, yy, np.full_like(xx, z, dtype=float),
-                             alpha=0.25 if is_active else 0.05, color='lightblue')
-        if is_active:
-            self.ax.text((x0 + x1) / 2, (y0 + y1) / 2, z + 0.1,
-                         'Z=0\n(1 sensor)', color='blue', fontsize=9,
-                         ha='center', weight='bold')
-
-        # Z=1 y Z=2: matriz 2x2, siempre dibujamos todos los sensores
-        for hybrid_id in [1, 2]:
-            z = Z_POSITIONS[hybrid_id]
-            active_lanes = active_lanes_by_hybrid.get(hybrid_id, set())
-
-            for lane, name, x_min, x_max, y_min, y_max, color in sensor_positions:
-                xx, yy = np.meshgrid([x_min, x_max], [y_min, y_max])
-                is_active = lane in active_lanes
-                self.ax.plot_surface(xx, yy, np.full_like(xx, z, dtype=float),
-                                     alpha=0.30 if is_active else 0.05, color=color)
-                if is_active:
-                    label = name.replace('h', str(hybrid_id))
-                    self.ax.text((x_min + x_max) / 2, (y_min + y_max) / 2, z + 0.1,
-                                 f'Z={hybrid_id}\n{label}', color='darkgreen',
-                                 fontsize=8, ha='center', weight='bold')
-
     def _setup_axes(self):
-        self.ax.set_xlabel('X (columnas)', fontsize=11)
-        self.ax.set_ylabel('Y (filas)', fontsize=11)
-        self.ax.set_zlabel('Z (planos)', fontsize=11)
-        self.ax.set_xlim(0, 2 * SENSOR_COLS)
-        self.ax.set_ylim(2 * SENSOR_ROWS, 0)
-        self.ax.set_zlim(7, -1)
-        self.ax.set_box_aspect((800, 384, 500))
-        self.ax.view_init(elev=25, azim=120)
+        setup_detector_axes(self.ax)
         self.ax.set_title('Trayectorias de partículas', fontsize=14, weight='bold')
 
     def plot_single_event(self, event_index: int):
@@ -133,7 +67,7 @@ class CoincidencePlotter:
         for (hybrid_id, chip_lane), (row, col) in event_dict.items():
             x_coords.append(col)
             y_coords.append(row)
-            z_coords.append(Z_POSITIONS[hybrid_id])
+            z_coords.append(z_position(hybrid_id))
             colors_list.append(
                 self.chip_colors.get((hybrid_id, chip_lane), (0.5, 0.5, 0.5))
             )
@@ -149,7 +83,7 @@ class CoincidencePlotter:
             print(f"❌ Error ajustando trayectoria: {e}")
             return
 
-        z_ext = np.linspace(-1, 7, 100)
+        z_ext = np.linspace(Z_END, Z_START, 100)
         x_ext = x_poly(z_ext)
         y_ext = y_poly(z_ext)
 

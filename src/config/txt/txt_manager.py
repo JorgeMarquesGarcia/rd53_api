@@ -2,7 +2,8 @@ from __future__ import annotations
 from pathlib import Path
 import logging
 from src.core.decorators import ensure_loaded
-from src.core.mask import Mask, NROWS, NCOLS
+from src.core.mask import Mask
+from src.chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS
 from enum import Enum, auto
 from datetime import datetime
 
@@ -29,8 +30,8 @@ class TxtManager(BaseConfigManager):
         self._invalid_pixel_count = 0
 
         #Dimensions
-        self._nrows = NROWS
-        self._ncols = NCOLS
+        self._nrows = SENSOR_ROWS
+        self._ncols = SENSOR_COLS
 
 
     def load(self) -> None:

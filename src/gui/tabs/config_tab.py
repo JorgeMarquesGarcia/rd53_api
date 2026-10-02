@@ -17,17 +17,9 @@ from PyQt5.QtGui import QFont
 from src.config.system_config import SystemConfig
 from src.config.xml.xml_manager import XmlManager
 from src.chip.register_map import ChipSettings
+from src.chip.detector_geometry import DETECTOR_LAYOUT, SENSOR_COLS
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
-
-# ---------------------------------------------------------------------------
-# Geometría del detector
-# ---------------------------------------------------------------------------
-DETECTOR_LAYOUT = {
-    0: {"label": "Layer 0  (Z=0)",  "hybrid": 0, "chips": [0],       "rd53_offset": 0, "single": True},
-    1: {"label": "Layer 1  (Z=1)",  "hybrid": 1, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
-    2: {"label": "Layer 2  (Z=2)",  "hybrid": 2, "chips": [0,1,2,3], "rd53_offset": 4, "single": False},
-}
 
 class ConfigTab(QWidget):
     """Tab de configuración: detector activo + paths del sistema."""
@@ -202,7 +194,7 @@ class ConfigTab(QWidget):
         self._col_end.setMaximumWidth(80)
         cols_layout.addWidget(self._col_end, 0, 3)
 
-        note = QLabel("  (chip columns 0–399, active range typically 128–263)")
+        note = QLabel(f"  (chip columns 0–{SENSOR_COLS - 1}, active range typically 128–263)")
         note.setStyleSheet("color: #505868; font-size: 10px;")
         cols_layout.addWidget(note, 1, 0, 1, 4)
 
@@ -620,8 +612,8 @@ class ConfigTab(QWidget):
         try:
             col_start = int(self._col_start.text())
             col_end   = int(self._col_end.text())
-            if not (0 <= col_start < col_end <= 399):
-                errors.append("Column range must satisfy: 0 ≤ start < end ≤ 399")
+            if not (0 <= col_start < col_end <= SENSOR_COLS - 1):
+                errors.append(f"Column range must satisfy: 0 ≤ start < end ≤ {SENSOR_COLS - 1}")
         except ValueError:
             errors.append("Column start/end must be integers.")
             col_start, col_end = 128, 263

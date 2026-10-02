@@ -17,14 +17,16 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QTextEdit,
     QFileDialog, QButtonGroup,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal
 
 from src.config.system_config import SystemConfig
 from src.core.results_finder import (
     latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
 )
-from src.gui.tabs.acquisition_tab import Raw2RootWorker
+from src.gui.tabs.acquisition_tab import Raw2RootWorker, HitAnalysisWorker
+from src.gui.trajectory_view import TrajectoryView
+from src.gui.noise_mask_view import NoiseMaskView
 from src.plotter.calibration_view import discover_chips, build_chip_plots_widget
 
 MODE_CALIBRATION = 0
@@ -37,6 +39,30 @@ _SEGMENT_QSS = (
     "QPushButton:checked { background: #003D4A; color: #00E5FF; "
     "border: 1px solid #00E5FF; font-weight: bold; }"
 )
+
+
+class NoiseAnalysisWorker(QObject):
+    """Carga un .root y ejecuta NoiseAnalysis fuera del hilo de la GUI."""
+    log_message = pyqtSignal(str)
+    analysed    = pyqtSignal(str, object, object)   # (root_path, pixel_counts, stats)
+    finished    = pyqtSignal()
+
+    def __init__(self, root_path: str):
+        super().__init__()
+        self._root_path = root_path
+
+    def run(self):
+        try:
+            from src.analysis.analysis_noise import NoiseAnalysis
+
+            root_manager = SystemConfig.create_root_manager(path=self._root_path)
+            root_manager.load(self._root_path)
+            analysis = NoiseAnalysis(root_manager)
+            self.analysed.emit(self._root_path, analysis.noisy_pixel_counts, analysis.stats)
+        except Exception as e:
+            self.log_message.emit(f"[NOISE ERROR] {Path(self._root_path).name}: {e}")
+        finally:
+            self.finished.emit()
 
 
 class AnalysisTab(QWidget):
@@ -52,8 +78,12 @@ class AnalysisTab(QWidget):
         self._chip_checks: list[tuple[tuple[int, int], QCheckBox]] = []
         self._file_tabs: dict[str, QWidget] = {}   # ruta -> pestaña de resultados
         self._conversion_thread: QThread | None = None
-        self._conversion_worker: Raw2RootWorker | None = None  # (sin import de tipo si prefieres: dejarlo sin anotar)
+        self._conversion_worker: Raw2RootWorker | None = None
         self._conversion_ok: bool = False
+        self._hit_thread: QThread | None = None
+        self._hit_worker: HitAnalysisWorker | None = None
+        self._noise_thread: QThread | None = None
+        self._noise_worker: NoiseAnalysisWorker | None = None
 
         self._build_ui()
         self._refresh_recent()
@@ -74,6 +104,10 @@ class AnalysisTab(QWidget):
     def on_config_applied(self):
         """Llamado desde MainWindow cuando se aplica la configuración."""
         self._refresh_recent()
+        # Los paneles de máscara abiertos dependen de la configuración activa
+        for widget in self._file_tabs.values():
+            if isinstance(widget, NoiseMaskView):
+                widget.refresh_sources()
 
     # ==================================================================
     # Construcción UI
@@ -205,6 +239,26 @@ class AnalysisTab(QWidget):
         self._btn_convert.setVisible(False)
         layout.addWidget(self._btn_convert)
 
+        self._chk_animate = QCheckBox("Animate trajectories")
+        self._chk_animate.setChecked(True)
+        self._chk_animate.setToolTip("Unchecked: draw all tracks at once")
+        self._chk_animate.setVisible(False)
+        layout.addWidget(self._chk_animate)
+
+        self._btn_hits = QPushButton("HIT ANALYSIS")
+        self._btn_hits.setObjectName("btn_launch")
+        self._btn_hits.setToolTip("Run HitAnalysis on the selected ROOT file and show its trajectories")
+        self._btn_hits.clicked.connect(self._run_hit_analysis)
+        self._btn_hits.setVisible(False)
+        layout.addWidget(self._btn_hits)
+
+        self._btn_noise = QPushButton("NOISE ANALYSIS")
+        self._btn_noise.setObjectName("btn_launch")
+        self._btn_noise.setToolTip("Find noisy pixels in the selected ROOT file and mask them")
+        self._btn_noise.clicked.connect(self._run_noise_analysis)
+        self._btn_noise.setVisible(False)
+        layout.addWidget(self._btn_noise)
+
         layout.addStretch(1)
         return panel
 
@@ -291,6 +345,9 @@ class AnalysisTab(QWidget):
         self._chips_group.setVisible(is_cal)
         self._btn_plot.setVisible(is_cal)
         self._btn_convert.setVisible(not is_cal)
+        self._btn_hits.setVisible(not is_cal)
+        self._btn_noise.setVisible(not is_cal)
+        self._chk_animate.setVisible(not is_cal)
 
         # Cambiar de modo invalida la selección anterior
         self._set_selected_file(None)
@@ -334,8 +391,6 @@ class AnalysisTab(QWidget):
             return
 
         try:
-            from src.gui.tabs.acquisition_tab import Raw2RootWorker
-
             worker = Raw2RootWorker(
                 xml_path=SystemConfig.get_xml_path(),
                 results_dir=SystemConfig.get_root_path(),
@@ -371,6 +426,125 @@ class AnalysisTab(QWidget):
         self._conversion_worker = None
         self._btn_convert.setEnabled(True)
         self._refresh_recent()
+
+    # ==================================================================
+    # HIT ANALYSIS (modo Acquisition)
+    # ==================================================================
+    def _run_hit_analysis(self):
+        path = self._selected_file
+        if path is None or path.suffix.lower() != ROOT_EXT:
+            self._log_write("[WARN] Select a .root file to run the hit analysis.")
+            return
+
+        if self._hit_thread is not None and self._hit_thread.isRunning():
+            self._log_write("[WARN] A hit analysis is already running.")
+            return
+
+        worker = HitAnalysisWorker(str(path))
+        self._hit_worker = worker
+        self._btn_hits.setEnabled(False)
+        self._log_write(f"[START] Running HitAnalysis on {path.name}...")
+        self._hit_thread = QThread(self)
+        worker.moveToThread(self._hit_thread)
+        self._hit_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.analysed.connect(self._on_hits_analysed)
+        worker.finished.connect(self._hit_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        self._hit_thread.finished.connect(self._on_hit_thread_finished)
+        self._hit_thread.finished.connect(self._hit_thread.deleteLater)
+        self._hit_thread.start()
+
+    def _on_hits_analysed(self, root_path: str, plot_coord: list, active_chips: list):
+        path = Path(root_path)
+        n = len(plot_coord)
+        self._log_write(f"[OK]   HitAnalysis complete: {n} tracks reconstructed.")
+        if n == 0:
+            self._log_write(f"[WARN] No tracks found in {path.name}.")
+            return
+
+        view = TrajectoryView()
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+
+        header = QHBoxLayout()
+        header.addWidget(QLabel(f"{n} tracks"))
+        header.addStretch()
+        save_btn = QPushButton("Save Plot")
+        save_btn.clicked.connect(lambda *_: self._save_trajectories(view))
+        header.addWidget(save_btn)
+        page_layout.addLayout(header)
+        page_layout.addWidget(view, 1)
+
+        self._add_result_tab(path, page, kind="hits")
+        view.reset(active_chips)
+        if self._chk_animate.isChecked():
+            view.animate(plot_coord)
+        else:
+            view.draw_all(plot_coord)
+
+    def _on_hit_thread_finished(self):
+        self._hit_thread = None
+        self._hit_worker = None
+        self._btn_hits.setEnabled(True)
+
+    # ==================================================================
+    # NOISE ANALYSIS (modo Acquisition)
+    # ==================================================================
+    def _run_noise_analysis(self):
+        path = self._selected_file
+        if path is None or path.suffix.lower() != ROOT_EXT:
+            self._log_write("[WARN] Select a .root file to run the noise analysis.")
+            return
+
+        if self._noise_thread is not None and self._noise_thread.isRunning():
+            self._log_write("[WARN] A noise analysis is already running.")
+            return
+
+        worker = NoiseAnalysisWorker(str(path))
+        self._noise_worker = worker
+        self._btn_noise.setEnabled(False)
+        self._log_write(f"[START] Running NoiseAnalysis on {path.name}...")
+        self._noise_thread = QThread(self)
+        worker.moveToThread(self._noise_thread)
+        self._noise_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.analysed.connect(self._on_noise_analysed)
+        worker.finished.connect(self._noise_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        self._noise_thread.finished.connect(self._on_noise_thread_finished)
+        self._noise_thread.finished.connect(self._noise_thread.deleteLater)
+        self._noise_thread.start()
+
+    def _on_noise_analysed(self, root_path: str, pixel_counts: dict, stats: dict):
+        path = Path(root_path)
+        n = stats["n_noisy_pixels"]
+        self._log_write(f"[OK]   NoiseAnalysis complete: {n} noisy pixel(s) "
+                        f"({stats['noise_percentage']:.4f} %).")
+        if n == 0:
+            self._log_write(f"[INFO] No noisy pixels in {path.name}: nothing to mask.")
+            return
+
+        view = NoiseMaskView(path, pixel_counts, stats)
+        view.log_message.connect(self._log_write)
+        self._add_result_tab(path, view, kind="noise")
+
+    def _on_noise_thread_finished(self):
+        self._noise_thread = None
+        self._noise_worker = None
+        self._btn_noise.setEnabled(True)
+
+    def _save_trajectories(self, view: TrajectoryView):
+        try:
+            try:
+                output_dir = SystemConfig.get_root_path().parent / "plots"
+            except Exception:
+                output_dir = None
+            saved = view.save(output_dir)
+            self._log_write(f"[OK]   Plot saved: {saved}")
+        except Exception as e:
+            self._log_write(f"[ERROR] Cannot save plot: {e}")
 
 
     # ==================================================================
@@ -538,18 +712,26 @@ class AnalysisTab(QWidget):
             self._log_write(f"[ERROR] Cannot plot {path.name}: {e}")
             return
 
-        # Volver a dibujar el mismo fichero reemplaza su pestaña
-        old = self._file_tabs.get(str(path))
+        self._add_result_tab(path, inner)
+        self._log_write("[OK]   Plots ready.")
+
+    def _add_result_tab(self, path: Path, widget: QWidget, kind: str = ""):
+        """Añade la pestaña de resultados de `path`; si ya existía, la reemplaza.
+
+        `kind` distingue resultados distintos del mismo fichero (p. ej. hits y ruido).
+        """
+        key = f"{path}#{kind}" if kind else str(path)
+        old = self._file_tabs.get(key)
         if old is not None:
             self._close_result_tab(self._results_tabs.indexOf(old))
 
-        idx = self._results_tabs.addTab(inner, path.stem)
+        title = f"{path.stem} · {kind}" if kind else path.stem
+        idx = self._results_tabs.addTab(widget, title)
         self._set_tab_close_button(self._results_tabs, idx)
         self._results_tabs.setTabToolTip(idx, str(path))
         self._results_tabs.setCurrentIndex(idx)
-        self._file_tabs[str(path)] = inner
+        self._file_tabs[key] = widget
         self._update_results_visibility()
-        self._log_write("[OK]   Plots ready.")
 
     def _set_tab_close_button(self, tabs: QTabWidget, index: int) -> None:
         button = QToolButton(tabs)

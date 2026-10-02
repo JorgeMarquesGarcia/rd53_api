@@ -5,17 +5,9 @@ import awkward as ak
 from src.config.root.root_manager import RootManager
 from src.analysis.analysis_base import BaseAnalysis
 from src.core.exceptions import NAErrorNoHits
+from src.chip.detector_geometry import to_global
 
-SENSOR_ROWS = 192
-SENSOR_COLS = 400
 TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
-
-OFFSETS = {
-    0: (0, 0),
-    1: (0, SENSOR_COLS),
-    2: (SENSOR_ROWS, SENSOR_COLS),
-    3: (SENSOR_ROWS, 0),
-}
 
 
 """Análisis de hits para archivos ROOT.
@@ -120,7 +112,8 @@ class HitAnalysis(BaseAnalysis):
         """
         Retorna una lista de len(nevents) donde cada elemento es un dict:
             {(hybrid_id, chip_lane): (row, col)}
-        con el hit de máximo ToT por detector, con offsets aplicados.
+        con el hit de máximo ToT por detector, en coordenadas globales
+        (offsets de detector_geometry aplicados).
         Detectores sin hits se omiten del dict.
         """
 
@@ -139,16 +132,8 @@ class HitAnalysis(BaseAnalysis):
                     tots = ak.to_list(event.RD53_hit_tot[hit_index:hit_index + nhits])
 
                     max_idx = tots.index(max(tots))
-                    row = rows[max_idx]
-                    col = cols[max_idx]
-
-                    if hybrid_id == 0:
-                        row += SENSOR_ROWS // 2
-                        col += SENSOR_COLS // 2
-                    else:
-                        row_off, col_off = OFFSETS[chip_lane]
-                        row += row_off
-                        col += col_off
+                    row, col = to_global(hybrid_id, chip_lane,
+                                         rows[max_idx], cols[max_idx])
 
                     event_dict[(hybrid_id, chip_lane)] = (row, col)
 

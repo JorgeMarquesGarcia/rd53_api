@@ -46,6 +46,12 @@ class TrajectoryView(QWidget):
         if not self._timer.isActive():
             self._start_next()
 
+    def draw_all(self, events: list[dict]) -> None:
+        """Dibuja los tracks de golpe, sin animación (descarta la cola pendiente)."""
+        self._timer.stop()
+        self._queue.clear()
+        self._plotter.draw_tracks(events)
+
     def save(self, output_dir: Path | None = None) -> Path:
         return self._plotter.save(output_dir)
 
