@@ -371,8 +371,7 @@ class AnalysisTab(QWidget):
         self._conversion_worker = None
         self._btn_convert.setEnabled(True)
         self._refresh_recent()
-        self._log_write("[OK] RAW to ROOT conversion finished.")
-    
+
 
     # ==================================================================
     # Lista de recientes / fichero seleccionado
@@ -526,13 +525,18 @@ class AnalysisTab(QWidget):
                         f"{len(chips)} chip(s) from {path.name}...")
 
         inner = QTabWidget()
-        with self._busy():
-            for h, c in chips:
-                widget = build_chip_plots_widget(
-                    analysis, str(path), h, c, col_start, col_end,
-                    log=self._log_write,
-                )
-                inner.addTab(widget, f"H{h} · Chip {c}")
+        try:
+            with self._busy():
+                for h, c in chips:
+                    widget = build_chip_plots_widget(
+                        analysis, str(path), h, c, col_start, col_end,
+                        log=self._log_write,
+                    )
+                    inner.addTab(widget, f"H{h} · Chip {c}")
+        except Exception as e:
+            inner.deleteLater()
+            self._log_write(f"[ERROR] Cannot plot {path.name}: {e}")
+            return
 
         # Volver a dibujar el mismo fichero reemplaza su pestaña
         old = self._file_tabs.get(str(path))
@@ -557,7 +561,9 @@ class AnalysisTab(QWidget):
             "QToolButton { background: transparent; border: none; padding: 0px; }"
             "QToolButton:hover { background: transparent; }"
         )
-        button.clicked.connect(lambda *_: self._close_result_tab(index))
+        # El índice cambia al cerrar otras pestañas: resolverlo en el clic
+        widget = tabs.widget(index)
+        button.clicked.connect(lambda *_: self._close_result_tab(tabs.indexOf(widget)))
         tabs.tabBar().setTabButton(index, QTabBar.RightSide, button)
 
     def _close_result_tab(self, index: int):

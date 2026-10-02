@@ -123,18 +123,15 @@ class TimedAcquisitionWorker(QObject):
 
 class Raw2RootWorker(QObject):
     """
-    Convierte un .raw a .root con run_raw2root().
+    Convierte un .raw concreto a .root con run_raw2root().
     Corre en su propio QThread para no bloquear ni el DAQ ni la GUI.
-
-    raw_path explícito → fichero cerrado (rotación o STOP).
-    raw_path None      → .raw activo (snapshot de visualización), resuelto
-                         por run_raw2root a partir del RunNumber.
+    El .raw puede estar cerrado (rotación o STOP) o activo (snapshot).
     """
     log_message = pyqtSignal(str)
     root_ready  = pyqtSignal(str)   # path al .root generado
     finished    = pyqtSignal(bool)
 
-    def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path | None = None,
+    def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path,
                  tag: str = "RAW2ROOT"):
         super().__init__()
         self._xml_path    = xml_path
@@ -214,6 +211,7 @@ class StandaloneAcquisitionWorker(QObject):
     Ciclo de vida:
       1. Lanza CMSITminiDAQ -f <xml> -c physics -t -1 en un thread interno.
           Si el comando falla, se detiene y deja el reinicio al usuario.
+         Cuando el DAQ anuncia el .raw que escribe, emite raw_file_started(raw_path).
       2. Hace polling del .raw cada DAQ_POLL_INTERVAL segundos.
          Emite debug por señal en cada poll.
       3. Cuando el .raw ≥ RAW_SIZE_LIMIT_BYTES:
@@ -225,9 +223,10 @@ class StandaloneAcquisitionWorker(QObject):
       5. ABORT (abort): mata el DAQ y sale sin emitir nada.
     """
 
-    log_message    = pyqtSignal(str)
-    raw_cycle_done = pyqtSignal(Path)   # .raw cerrado, listo para convertir
-    finished       = pyqtSignal()
+    log_message      = pyqtSignal(str)
+    raw_file_started = pyqtSignal(Path)   # .raw que el DAQ está escribiendo ahora
+    raw_cycle_done   = pyqtSignal(Path)   # .raw cerrado, listo para convertir
+    finished         = pyqtSignal()
 
     def __init__(
         self,
@@ -326,6 +325,7 @@ class StandaloneAcquisitionWorker(QObject):
             )
             self._current_scan = scan
             scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
+            scan._raw_file_callback = self.raw_file_started.emit
 
             # Lanzar run() en thread interno para poder hacer polling
             daq_started = threading.Event()
@@ -476,6 +476,7 @@ class AcquisitionTab(QWidget):
         # Los .raw cerrados (rotación / STOP) se encolan y nunca se descartan;
         # el snapshot live solo se lanza si no hay nada en curso ni pendiente.
         self._closed_raws: deque[Path]          = deque()
+        self._active_raw: Path | None           = None    # .raw que el DAQ escribe ahora
         self._job_active: bool                  = False
         self._job_closed: bool                  = False   # el job en curso es de un .raw cerrado
         self._r2r_worker: Raw2RootWorker | None = None
@@ -775,6 +776,7 @@ class AcquisitionTab(QWidget):
         self._shown_tracks      = 0
         self._closed_tracks     = 0
         self._open_tracks       = 0
+        self._active_raw        = None
 
         self._standalone_worker = StandaloneAcquisitionWorker(
             chips=chips,
@@ -785,6 +787,7 @@ class AcquisitionTab(QWidget):
         self._standalone_worker.moveToThread(self._standalone_thread)
         self._standalone_thread.started.connect(self._standalone_worker.run)
         self._standalone_worker.log_message.connect(self._log_write)
+        self._standalone_worker.raw_file_started.connect(self._on_raw_file_started)
         self._standalone_worker.raw_cycle_done.connect(self._on_raw_cycle_done)
         self._standalone_worker.finished.connect(self._on_standalone_finished)
 
@@ -795,8 +798,15 @@ class AcquisitionTab(QWidget):
         self._refresh_timer.start()
         self._standalone_thread.start()
 
+    def _on_raw_file_started(self, raw_path: Path):
+        """El DAQ ha anunciado el .raw que está escribiendo: será el del snapshot."""
+        self._active_raw = raw_path
+        self._log_write(f"[STANDALONE] Active .raw: {raw_path.name}")
+
     def _on_raw_cycle_done(self, raw_path: Path):
         """Un .raw se ha cerrado (rotación o STOP): se encola para convertirlo."""
+        if self._active_raw == raw_path:
+            self._active_raw = None
         self._log_write(f"[STANDALONE] Closed .raw queued for conversion: {raw_path.name}")
         self._closed_raws.append(raw_path)
         self._run_next_job()
@@ -814,8 +824,12 @@ class AcquisitionTab(QWidget):
             self._log_write("[LIVE] Previous conversion still running — skipping tick.")
             return
 
-        self._log_write("[LIVE] Snapshot tick — converting active .raw …")
-        self._start_job(raw_path=None)
+        if self._active_raw is None:
+            self._log_write("[LIVE] Active .raw not announced by the DAQ yet — skipping tick.")
+            return
+
+        self._log_write(f"[LIVE] Snapshot tick — converting {self._active_raw.name} …")
+        self._start_job(self._active_raw, closed=False)
 
     # ------------------------------------------------------------------
     # Procesado: .raw → .root → HitAnalysis (un job cada vez)
@@ -824,10 +838,10 @@ class AcquisitionTab(QWidget):
     def _run_next_job(self):
         if self._job_active or not self._closed_raws:
             return
-        self._start_job(raw_path=self._closed_raws.popleft())
+        self._start_job(self._closed_raws.popleft(), closed=True)
 
-    def _start_job(self, raw_path: Path | None):
-        """raw_path explícito → .raw cerrado; None → snapshot del .raw activo."""
+    def _start_job(self, raw_path: Path, closed: bool):
+        """closed=True → .raw cerrado (rotación/STOP); False → snapshot del .raw activo."""
         try:
             xml_path = SystemConfig.get_xml_path()
         except Exception as e:
@@ -835,7 +849,7 @@ class AcquisitionTab(QWidget):
             return
 
         self._job_active = True
-        self._job_closed = raw_path is not None
+        self._job_closed = closed
 
         worker = Raw2RootWorker(
             xml_path=xml_path,

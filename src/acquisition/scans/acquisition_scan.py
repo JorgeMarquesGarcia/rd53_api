@@ -1,13 +1,18 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
+import re
 import shlex
 from src.remote.terminal import Terminal
 from src.acquisition.maps import AcquisitionMap
 from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
 from src.config.system_config import SystemConfig
 import logging
-logger = logging.getLogger(__name__)  
+logger = logging.getLogger(__name__)
+
+# Línea con la que CMSITminiDAQ anuncia el .raw que está escribiendo,
+# p. ej. "Saving binary data into: Results/Run000298_Physics_Board000.raw"
+RAW_FILE_PATTERN = re.compile(r"Saving binary data into:\s*(\S+\.raw)")
 
 
 class AcquisitionScan(ABC):
@@ -22,6 +27,7 @@ class AcquisitionScan(ABC):
         self.timeout = timeout
         self.scan_time = scan_time
         self.last_scan_end_pattern = None
+        self.raw_path: Path | None = None   # .raw que escribe el DAQ (leído de su salida)
 
         sys_config = SystemConfig()
         self.ph2_acf_dir = str(sys_config.get_ph2_acf_dir())
@@ -85,13 +91,26 @@ class AcquisitionScan(ABC):
     def run(self):
         self._setup_xml()
         self.last_scan_end_pattern = None
+        self.raw_path = None
         self._terminal = None
 
         line_cb = getattr(self, '_line_callback', None)
+        raw_file_cb = getattr(self, '_raw_file_callback', None)
+
+        def _on_line(line: str):
+            if self.raw_path is None:
+                match = RAW_FILE_PATTERN.search(line)
+                if match:
+                    # La ruta que imprime el DAQ es relativa a su cwd (txt_dir)
+                    self.raw_path = Path(self.txt_dir) / match.group(1)
+                    if raw_file_cb:
+                        raw_file_cb(self.raw_path)
+            if line_cb:
+                line_cb(line)
 
         cmd = f"CMSITminiDAQ -f {self.xml.get_path()} -c physics -t {self.scan_time}"
 
-        with Terminal(timeout=self.timeout, line_callback=line_cb) as term:
+        with Terminal(timeout=self.timeout, line_callback=_on_line) as term:
             self._terminal = term
             output, matched_pattern = term.run_scan(cmd, cwd=self.txt_dir)
             self.last_scan_end_pattern = matched_pattern
