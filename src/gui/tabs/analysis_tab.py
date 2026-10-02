@@ -17,11 +17,11 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QTextEdit,
     QFileDialog, QButtonGroup,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 from src.config.system_config import SystemConfig
 from src.core.results_finder import (
-    latest_files, detect_analysis, ROOT_EXT,
+    latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
 )
 from src.plotter.calibration_view import discover_chips, build_chip_plots_widget
@@ -50,6 +50,7 @@ class AnalysisTab(QWidget):
         self._selected_file: Path | None = None
         self._chip_checks: list[tuple[tuple[int, int], QCheckBox]] = []
         self._file_tabs: dict[str, QWidget] = {}   # ruta -> pestaña de resultados
+        self._conversion_thread: QThread | None = None
 
         self._build_ui()
         self._refresh_recent()
@@ -194,6 +195,13 @@ class AnalysisTab(QWidget):
         self._btn_plot.clicked.connect(self._plot)
         layout.addWidget(self._btn_plot)
 
+        self._btn_convert = QPushButton("RAW2ROOT")
+        self._btn_convert.setObjectName("btn_launch")
+        self._btn_convert.setToolTip("Convert the selected RAW file to ROOT")
+        self._btn_convert.clicked.connect(self._convert_raw)
+        self._btn_convert.setVisible(False)
+        layout.addWidget(self._btn_convert)
+
         layout.addStretch(1)
         return panel
 
@@ -254,7 +262,8 @@ class AnalysisTab(QWidget):
     # Reglas por modo
     # ==================================================================
     def _allowed_extensions(self) -> tuple[str, ...]:
-        # Ambos modos analizan únicamente ficheros .root
+        if self.mode == MODE_ACQUISITION:
+            return (ROOT_EXT, RAW_EXT)
         return (ROOT_EXT,)
 
     def _name_patterns(self) -> tuple[str, ...]:
@@ -278,6 +287,7 @@ class AnalysisTab(QWidget):
         # llegarán en fases posteriores.
         self._chips_group.setVisible(is_cal)
         self._btn_plot.setVisible(is_cal)
+        self._btn_convert.setVisible(not is_cal)
 
         # Cambiar de modo invalida la selección anterior
         self._set_selected_file(None)
@@ -287,7 +297,10 @@ class AnalysisTab(QWidget):
     def _browse_file(self):
         start_dir = self._results_dir()
         exts = self._allowed_extensions()
-        file_filter = ("ROOT files (*.root)")
+        if self.mode == MODE_ACQUISITION:
+            file_filter = "ROOT and raw files (*.root *.raw)"
+        else:
+            file_filter = "ROOT files (*.root)"
 
         path, _ = QFileDialog.getOpenFileName(
             self, "Select file to analyze",
@@ -306,6 +319,45 @@ class AnalysisTab(QWidget):
         path = item.data(Qt.UserRole)
         if path:
             self._set_selected_file(Path(path))
+
+    def _convert_raw(self):
+        path = self._selected_file
+        if path is None or path.suffix.lower() != RAW_EXT:
+            self._log_write("Not .raw file selected. Please select a correct file")
+            return
+
+        if self._conversion_thread is not None and self._conversion_thread.isRunning():
+            self._log_write("[WARN] A RAW to ROOT conversion is already running.")
+            return
+
+        try:
+            from src.gui.tabs.acquisition_tab import Raw2RootWorker
+
+            worker = Raw2RootWorker(
+                xml_path=SystemConfig.get_xml_path(),
+                results_dir=SystemConfig.get_root_path(),
+                raw_path=path,
+            )
+        except Exception as e:
+            self._log_write(f"[ERROR] Cannot start RAW to ROOT conversion: {e}")
+            return
+
+        self._btn_convert.setEnabled(False)
+        self._log_write(f"[START] Converting {path.name} to ROOT...")
+        self._conversion_thread = QThread(self)
+        worker.moveToThread(self._conversion_thread)
+        self._conversion_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.finished.connect(self._conversion_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        self._conversion_thread.finished.connect(self._on_conversion_finished)
+        self._conversion_thread.finished.connect(self._conversion_thread.deleteLater)
+        self._conversion_thread.start()
+
+    def _on_conversion_finished(self):
+        self._btn_convert.setEnabled(True)
+        self._refresh_recent()
+        self._log_write("[OK] RAW to ROOT conversion finished.")
 
     # ==================================================================
     # Lista de recientes / fichero seleccionado

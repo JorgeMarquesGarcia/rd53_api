@@ -121,10 +121,11 @@ class Raw2RootWorker(QObject):
     root_ready  = pyqtSignal(str)   # path absoluto al .root generado
     finished    = pyqtSignal()
 
-    def __init__(self, xml_path: Path, results_dir: Path):
+    def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path | None = None):
         super().__init__()
         self._xml_path    = xml_path
         self._results_dir = results_dir
+        self._raw_path    = raw_path
 
     def run(self):
         self._dbg("Converting .raw → .root …")
@@ -137,6 +138,7 @@ class Raw2RootWorker(QObject):
             _, root_path = scan.run_raw2root(
                 xml_path=self._xml_path,
                 results_dir=self._results_dir,
+                raw_path=self._raw_path,
                 line_callback=lambda line: self.log_message.emit(f"[RAW2ROOT] {line}"),
             )
             self._dbg(f"Done → {root_path.name}")
