@@ -1,11 +1,13 @@
 from __future__ import annotations
-import matplotlib.pyplot as plt
 import numpy as np
-import time
 import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple
+
+from matplotlib.figure import Figure
+from matplotlib import cm
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +16,32 @@ SENSOR_COLS = 400
 
 Z_POSITIONS = {0: 0, 1: 3, 2: 6}
 
+# La partícula entra por Z alto y sale por debajo de Z=0
+Z_START = 7
+Z_END = -1
+ANIMATION_STEPS = 20   # posiciones por track; el ritmo lo marca quien llama a advance()
+
 
 class InteractiveCoincidencePlotter:
-    """Plotter interactivo con animación de trayectorias de partículas."""
+    """Plotter 3D de trayectorias de partículas, incrustable en Qt.
 
-    def __init__(self, plot_coord_data: List[dict], active_chips: List[Tuple] = None):
-        self.plot_data = plot_coord_data
-        self.active_chips = active_chips or []
+    Solo dibuja: no usa pyplot, no duerme y no gestiona tiempos. La animación
+    la conduce quien lo usa llamando a start_track() y luego a advance()
+    hasta que devuelve False.
+
+    Flujo de uso:
+        plotter = InteractiveCoincidencePlotter()
+        widget  = plotter.get_canvas()     # FigureCanvas para insertar en Qt
+        plotter.reset(active_chips)
+        if plotter.start_track(event_dict):
+            while plotter.advance(): ...   # una posición por llamada
+    """
+
+    def __init__(self, num_steps: int = ANIMATION_STEPS):
+        self.num_steps = num_steps
         self.track_count = 0
-        self.colors = plt.cm.rainbow(np.linspace(0, 1, 20))
+        self.active_chips: List[Tuple] = []
+        self.colors = cm.rainbow(np.linspace(0, 1, 20))
 
         self.chip_colors = {
             (0, 0): (0.3, 0.7, 1.0),
@@ -36,15 +55,103 @@ class InteractiveCoincidencePlotter:
             (2, 3): (1.0, 0.8, 0.0),
         }
 
-        plt.ion()
-        self.fig = plt.figure(figsize=(12, 9))
+        self.fig = Figure(figsize=(12, 9))
+        self._canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111, projection='3d')
+        self._anim: dict | None = None   # estado del track que se está animando
 
+        self.reset()
+
+    # ------------------------------------------------------------------
+    # API pública
+    # ------------------------------------------------------------------
+
+    def get_canvas(self) -> FigureCanvas:
+        return self._canvas
+
+    def reset(self, active_chips: List[Tuple] | None = None):
+        """Borra todos los tracks y redibuja los planos del detector."""
+        if active_chips is not None:
+            self.active_chips = list(active_chips)
+        self.track_count = 0
+        self._anim = None
+        self.ax.clear()
         self._draw_detector_planes()
         self._setup_axes()
+        self._canvas.draw_idle()
 
-        plt.show(block=False)
-        plt.pause(0.1)
+    def start_track(self, event_dict: dict) -> bool:
+        """Prepara la animación de un track. Devuelve False si no se puede trazar."""
+        traj = self._prepare(event_dict)
+        if traj is None:
+            return False
+        x_ext, y_ext, z_ext, color = traj
+
+        traj_line, = self.ax.plot([], [], [], color=color, linewidth=2,
+                                  alpha=0.7, label=f'Track #{self.track_count}')
+        particle = self.ax.scatter([], [], [], c='white', s=120,
+                                   edgecolors='black', linewidth=1.5, zorder=10)
+        detector_z_values = self._detector_z_values(event_dict)
+
+        self._anim = {
+            "event": event_dict,
+            "x": x_ext, "y": y_ext, "z": z_ext,
+            "line": traj_line,
+            "particle": particle,
+            "pending_z": detector_z_values,
+            "step": 0,
+        }
+        return True
+
+    def advance(self) -> bool:
+        """Dibuja la siguiente posición del track en curso.
+
+        Devuelve True mientras queden posiciones; al terminar cierra el track
+        y devuelve False.
+        """
+        a = self._anim
+        if a is None:
+            return False
+
+        i = a["step"]
+        a["line"].set_data(a["x"][:i + 1], a["y"][:i + 1])
+        a["line"].set_3d_properties(a["z"][:i + 1])
+        a["particle"]._offsets3d = ([a["x"][i]], [a["y"][i]], [a["z"][i]])
+
+        # Impactos: se dibuja el hit real al cruzar cada plano con hit
+        current_z = a["z"][i]
+        for det_z in [zv for zv in a["pending_z"] if zv > current_z]:
+            self._draw_impacts(a["event"], det_z)
+            a["pending_z"].remove(det_z)
+
+        a["step"] += 1
+        if a["step"] < len(a["z"]):
+            self._canvas.draw_idle()
+            return True
+
+        a["particle"].remove()
+        self._anim = None
+        self._finish_track()
+        return False
+
+    def save(self, output_dir: Path = None) -> Path:
+        if output_dir is None:
+            output_dir = Path(__file__).parent.parent / "plots"
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = output_dir / f"Coincidence_interactive_{timestamp}.png"
+
+        self.fig.suptitle(f'Coincidence Trajectories — {self.track_count} trayectorias',
+                          fontsize=14, weight='bold')
+        self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
+        logger.info(f"Figura guardada en: {filepath}")
+        return filepath
+
+    # ------------------------------------------------------------------
+    # Dibujo
+    # ------------------------------------------------------------------
 
     def _active_hybrid_ids(self):
         return set(h for h, _ in self.active_chips)
@@ -99,146 +206,56 @@ class InteractiveCoincidencePlotter:
         self.ax.set_zlabel('Z (planos)', fontsize=11)
         self.ax.set_xlim(0, 2 * SENSOR_COLS)
         self.ax.set_ylim(2 * SENSOR_ROWS, 0)
-        self.ax.set_zlim(7, -1)
+        self.ax.set_zlim(Z_START, Z_END)
         self.ax.set_box_aspect((800, 384, 500))
         self.ax.view_init(elev=25, azim=120)
         self.ax.set_title('Trayectorias de partículas', fontsize=14, weight='bold')
 
-    def _build_trajectory(self, event_dict: dict):
-        """Construye los arrays x, y, z y el ajuste lineal a partir del event_dict."""
-        x_coords, y_coords, z_coords, colors_list = [], [], [], []
+    def _draw_impacts(self, event_dict: dict, det_z: int):
+        """Dibuja los hits reales del evento en el plano det_z."""
+        for (hid, lane), (row, col) in event_dict.items():
+            if Z_POSITIONS[hid] != det_z:
+                continue
+            color = self.chip_colors.get((hid, lane), (0.5, 0.5, 0.5))
+            self.ax.scatter([col], [row], [det_z], c=[color], s=100, alpha=0.95,
+                            edgecolors='black', linewidth=1.5)
 
-        for (hybrid_id, chip_lane), (row, col) in event_dict.items():
-            x_coords.append(col)
-            y_coords.append(row)
-            z_coords.append(Z_POSITIONS[hybrid_id])
-            colors_list.append(self.chip_colors.get((hybrid_id, chip_lane), (0.5, 0.5, 0.5)))
-
-        x = np.array(x_coords, dtype=float)
-        y = np.array(y_coords, dtype=float)
-        z = np.array(z_coords, dtype=float)
-
-        x_poly = np.poly1d(np.polyfit(z, x, 1))
-        y_poly = np.poly1d(np.polyfit(z, y, 1))
-
-        return x, y, z, colors_list, x_poly, y_poly
-
-    def plot_single_event(self, event_index: int, duration: float = 0.5, num_steps: int = 60):
-        """Dibuja un evento con animación de la partícula moviéndose."""
-        if event_index >= len(self.plot_data):
-            print(f"⚠️  Índice {event_index} fuera de rango")
-            return
-
-        event_dict = self.plot_data[event_index]
-
-        if len(event_dict) < 2:
-            print(f"⚠️  Evento {event_index}: solo {len(event_dict)} hit(s), insuficiente para trazar")
-            return
-
-        self._animate_trajectory(event_dict, event_index, duration, num_steps)
-
-    def plot_multiple_events(self, event_indices: List[int] = None, max_events: int = None,
-                             duration: float = 0.5, num_steps: int = 60):
-        """Anima múltiples eventos secuencialmente."""
-        if event_indices is None:
-            n = len(self.plot_data)
-            if max_events is not None:
-                n = min(n, max_events)
-            event_indices = list(range(n))
-
-        for idx in event_indices:
-            if idx < len(self.plot_data):
-                self.plot_single_event(idx, duration=duration, num_steps=num_steps)
-
-    def _animate_trajectory(self, event_dict: dict, event_index: int,
-                            duration: float, num_steps: int):
-        """Anima la trayectoria de un evento: la partícula entra por Z alto y sale por Z=0."""
-        try:
-            x, y, z, colors_list, x_poly, y_poly = self._build_trajectory(event_dict)
-        except Exception as e:
-            print(f"❌ Error construyendo trayectoria: {e}")
-            return
-
-        # La partícula entra por Z alto (6) y sale por Z=-1
-        z_start = 7
-        z_end = -1
-        z_ext = np.linspace(z_start, z_end, num_steps)
-        x_ext = x_poly(z_ext)
-        y_ext = y_poly(z_ext)
-
-        track_color = self.colors[self.track_count % len(self.colors)]
-
-        # Objetos de animación
-        traj_line, = self.ax.plot([], [], [], color=track_color, linewidth=2,
-                                  alpha=0.7, label=f'Event #{event_index}')
-        particle = self.ax.scatter([], [], [], c='white', s=120,
-                                   edgecolors='black', linewidth=1.5, zorder=10)
-
-        # Z positions de los detectores activos para detectar impactos
-        detector_z_values = sorted(set(Z_POSITIONS[h] for h, _ in event_dict.keys()), reverse=True)
-        hit_registered = {zv: False for zv in detector_z_values}
-
-        dt = duration / num_steps
-
-        print(f"🚀 Evento #{event_index} — {len(event_dict)} detectores con hit")
-
-        for i in range(num_steps):
-            # Actualizar trayectoria
-            traj_line.set_data(x_ext[:i+1], y_ext[:i+1])
-            traj_line.set_3d_properties(z_ext[:i+1])
-
-            # Actualizar posición de la partícula
-            particle._offsets3d = ([x_ext[i]], [y_ext[i]], [z_ext[i]])
-
-            # Detectar impactos en planos
-            current_z = z_ext[i]
-            if i > 0:
-                prev_z = z_ext[i - 1]
-                for det_z in detector_z_values:
-                    if not hit_registered[det_z] and prev_z >= det_z > current_z:
-                        # Dibujar punto de impacto real (del event_dict)
-                        hits_at_z = [
-                            (row, col) for (hid, lane), (row, col) in event_dict.items()
-                            if Z_POSITIONS[hid] == det_z
-                        ]
-                        colors_at_z = [
-                            self.chip_colors.get((hid, lane), (0.5, 0.5, 0.5))
-                            for (hid, lane) in event_dict.keys()
-                            if Z_POSITIONS[hid] == det_z
-                        ]
-                        for (row, col), color in zip(hits_at_z, colors_at_z):
-                            self.ax.scatter([col], [row], [det_z],
-                                            c=[color], s=100, alpha=0.95,
-                                            edgecolors='black', linewidth=1.5)
-                        hit_registered[det_z] = True
-                        print(f"   💥 Impacto en Z={det_z}: {hits_at_z}")
-
-            self.fig.canvas.draw()
-            self.fig.canvas.flush_events()
-            time.sleep(dt)
-
+    def _finish_track(self):
         self.track_count += 1
         if self.track_count <= 10:
             self.ax.legend(loc='upper right', fontsize=9)
         self.ax.set_title(f'Trayectorias — {self.track_count} tracks', fontsize=14, weight='bold')
+        self._canvas.draw_idle()
 
-        print(f"✅ Evento #{event_index} completado\n")
+    # ------------------------------------------------------------------
+    # Geometría
+    # ------------------------------------------------------------------
 
-    def save(self, output_dir: Path = None) -> Path:
-        if output_dir is None:
-            output_dir = Path(__file__).parent.parent / "plots"
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+    def _prepare(self, event_dict: dict):
+        """Ajuste lineal del track y trayectoria extendida entre Z_START y Z_END.
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = output_dir / f"Coincidence_interactive_{timestamp}.png"
+        Devuelve (x_ext, y_ext, z_ext, color) o None si el evento no es trazable.
+        """
+        if len(event_dict) < 2:
+            logger.warning("Evento con %d hit(s): insuficiente para trazar", len(event_dict))
+            return None
+        try:
+            x_poly, y_poly = self._fit(event_dict)
+        except Exception as e:
+            logger.warning("Error construyendo trayectoria: %s", e)
+            return None
 
-        self.fig.suptitle(f'Coincidence Trajectories — {self.track_count} trayectorias',
-                          fontsize=14, weight='bold')
-        self.fig.tight_layout()
-        self.fig.savefig(filepath, dpi=300, bbox_inches='tight')
-        logger.info(f"Figura guardada en: {filepath}")
-        return filepath
+        z_ext = np.linspace(Z_START, Z_END, self.num_steps)
+        color = self.colors[self.track_count % len(self.colors)]
+        return x_poly(z_ext), y_poly(z_ext), z_ext, color
 
-    def close(self):
-        plt.close(self.fig)
+    @staticmethod
+    def _fit(event_dict: dict):
+        x = np.array([col for (_, _), (_, col) in event_dict.items()], dtype=float)
+        y = np.array([row for (_, _), (row, _) in event_dict.items()], dtype=float)
+        z = np.array([Z_POSITIONS[h] for (h, _) in event_dict.keys()], dtype=float)
+        return np.poly1d(np.polyfit(z, x, 1)), np.poly1d(np.polyfit(z, y, 1))
+
+    @staticmethod
+    def _detector_z_values(event_dict: dict) -> list:
+        return sorted(set(Z_POSITIONS[h] for h, _ in event_dict.keys()), reverse=True)

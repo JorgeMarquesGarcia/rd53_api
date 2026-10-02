@@ -98,8 +98,9 @@ class AcquisitionScan(ABC):
 
         return output
     
-    def run_raw2root(self, xml_path, results_dir, cwd=None, timeout: int = 180,
-                 line_callback=None, raw_path=None) -> tuple[str, Path]:
+    @staticmethod
+    def run_raw2root(xml_path, results_dir, cwd=None, timeout: int = 180,
+                     line_callback=None, raw_path=None) -> tuple[str, Path]:
         from src.core import num_manager
 
         cwd = Path(cwd) if cwd is not None else SystemConfig.get_txt_base_dir()

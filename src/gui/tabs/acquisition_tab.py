@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import threading
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QObject
 
 from src.config.system_config import SystemConfig
 from src.config.acquisition_config import AcquisitionConfig
+from src.gui.trajectory_view import TrajectoryView
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -24,7 +26,8 @@ from src.config.acquisition_config import AcquisitionConfig
 
 RAW_SIZE_LIMIT_BYTES: int  = 1 * 1024 ** 3   # 1 GB — rotar el fichero .raw
 LIVE_REFRESH_MS: int       = 60_000          # ciclo de visualización: cada 60 s
-DAQ_POLL_INTERVAL: float   = 30.0             # segundos entre polls del .raw (rotación)
+DAQ_POLL_INTERVAL: float   = 60.0             # segundos entre polls del .raw (rotación)
+DAQ_CLOSE_TIMEOUT: float   = 10.0             # espera a que el DAQ cierre el .raw tras el Enter
 
 # Vthreshold_LIN: rango válido del spinbox y valor centinela "sin valor".
 # El centinela (-1) se muestra como "—" y bloquea START; NUNCA se envía al XML.
@@ -39,6 +42,14 @@ PHYSICS_BOX_STYLE: str = (
     "border: 1px solid rgba(255, 214, 0, 140); border-radius: 4px; }"
 )
 VTHRESH_MISSING_STYLE: str = "QSpinBox { border: 1px solid #FF5252; }"
+
+
+def _results_dir() -> Path:
+    """Directorio donde CMSITminiDAQ deja los .raw y .root (ROOT output directory)."""
+    try:
+        return SystemConfig.get_root_path()
+    except Exception:
+        return Path("results")
 
 
 # ===========================================================================
@@ -107,26 +118,29 @@ class TimedAcquisitionWorker(QObject):
 
 
 # ===========================================================================
-# Worker — Raw2Root (una terminal separada, un ciclo)
+# Worker — Raw2Root (una terminal separada, una conversión)
 # ===========================================================================
 
 class Raw2RootWorker(QObject):
     """
-    Convierte el .raw de un ciclo completo a .root usando run_raw2root().
+    Convierte un .raw a .root con run_raw2root().
     Corre en su propio QThread para no bloquear ni el DAQ ni la GUI.
+
+    raw_path explícito → fichero cerrado (rotación o STOP).
+    raw_path None      → .raw activo (snapshot de visualización), resuelto
+                         por run_raw2root a partir del RunNumber.
     """
     log_message = pyqtSignal(str)
-    root_ready  = pyqtSignal(str)   
+    root_ready  = pyqtSignal(str)   # path al .root generado
     finished    = pyqtSignal(bool)
 
-    def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path | None = None):
+    def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path | None = None,
+                 tag: str = "RAW2ROOT"):
         super().__init__()
         self._xml_path    = xml_path
         self._results_dir = results_dir
         self._raw_path    = raw_path
-        self._r2r_worker = None
-        self._live_r2r_worker = None
-
+        self._tag         = tag
 
     def run(self):
         success = False
@@ -134,100 +148,57 @@ class Raw2RootWorker(QObject):
         try:
             from src.acquisition.scans.physics import PhysicsScan
 
-            scan = PhysicsScan.__new__(PhysicsScan)
-            _, root_path = scan.run_raw2root(
+            _, root_path = PhysicsScan.run_raw2root(
                 xml_path=self._xml_path,
                 results_dir=self._results_dir,
                 raw_path=self._raw_path,
-                line_callback=lambda line: self.log_message.emit(f"[RAW2ROOT] {line}"),
+                line_callback=lambda line: self.log_message.emit(f"[{self._tag}] {line}"),
             )
             self._dbg(f"Done → {root_path.name}")
             self.root_ready.emit(str(root_path))
             success = True
 
         except Exception as e:
-            self.log_message.emit(f"[RAW2ROOT ERROR] {e}")
+            self.log_message.emit(f"[{self._tag} ERROR] {e}")
         finally:
             self.finished.emit(success)
 
     def _dbg(self, msg: str):
-        self.log_message.emit(f"[RAW2ROOT] {msg}")
+        self.log_message.emit(f"[{self._tag}] {msg}")
 
 
 # ===========================================================================
-# Worker — Conversión liviana para ciclo de visualización (cada 60 s)
+# Worker — HitAnalysis (carga del ROOT y reconstrucción fuera del hilo GUI)
 # ===========================================================================
 
-class LiveRaw2RootWorker(QObject):
+class HitAnalysisWorker(QObject):
     """
-    Convierte el .raw ACTIVO (en plena adquisición) a .root para el ciclo
-    de visualización de 60 s.  Es independiente del Raw2RootWorker de rotación:
-    ese se lanza al llegar a 1 GB; este se lanza cada minuto sobre lo que haya.
-    """
-    log_message = pyqtSignal(str)
-    root_ready  = pyqtSignal(str)   # path al .root generado
-    finished    = pyqtSignal()
-
-    def __init__(self, xml_path: Path, results_dir: Path):
-        super().__init__()
-        self._xml_path    = xml_path
-        self._results_dir = results_dir
-
-    def run(self):
-        self.log_message.emit("[LIVE R2R] Converting active .raw snapshot → .root …")
-        try:
-            from src.acquisition.scans.physics import PhysicsScan
-
-            scan = PhysicsScan.__new__(PhysicsScan)
-            _, root_path = scan.run_raw2root(
-                xml_path=self._xml_path,
-                results_dir=self._results_dir,
-                line_callback=lambda line: self.log_message.emit(f"[LIVE R2R] {line}"),
-            )
-            self.log_message.emit(f"[LIVE R2R] Snapshot ready → {root_path.name}")
-            self.root_ready.emit(str(root_path))
-        except Exception as e:
-            self.log_message.emit(f"[LIVE R2R ERROR] {e}")
-        finally:
-            self.finished.emit()
-
-
-# ===========================================================================
-# Worker — Visualización interactiva (hilo aparte para no bloquear la GUI)
-# ===========================================================================
-
-class TrajectoryAnimationWorker(QObject):
-    """
-    Ejecuta InteractiveCoincidencePlotter.plot_multiple_events() en un hilo
-    separado porque usa time.sleep() internamente y bloquearía la GUI si
-    se llamara desde el hilo principal o desde el QTimer.
+    Carga un .root y ejecuta HitAnalysis. Solo calcula: el dibujado lo hace
+    la GUI con los datos emitidos en analysed.
     """
     log_message = pyqtSignal(str)
+    analysed    = pyqtSignal(str, list, list)   # (root_path, plot_coord, active_chips)
     finished    = pyqtSignal()
 
-    def __init__(self, plot_coord_data: list[dict], active_chips: list[tuple],
-                 plotter_ref: list):  # plotter_ref = [None] — se rellena aquí
+    def __init__(self, root_path: str):
         super().__init__()
-        self._plot_coord_data = plot_coord_data
-        self._active_chips    = active_chips
-        self._plotter_ref     = plotter_ref  # lista de un elemento para pasar por referencia
+        self._root_path = root_path
 
     def run(self):
         try:
-            from src.plotter.trajectory_interactive import InteractiveCoincidencePlotter
+            from src.analysis.analysis_hit import HitAnalysis
+            from src.core.exceptions import NAErrorNoHits
 
-            plotter = InteractiveCoincidencePlotter(
-                plot_coord_data=self._plot_coord_data,
-                active_chips=self._active_chips,
-            )
-            self._plotter_ref[0] = plotter
-            self.log_message.emit(
-                f"[LIVE] Animating {len(self._plot_coord_data)} tracks…"
-            )
-            plotter.plot_multiple_events()
-            self.log_message.emit("[LIVE] Animation complete.")
+            root_manager = SystemConfig.create_root_manager(path=self._root_path)
+            root_manager.load(self._root_path)
+            try:
+                analysis = HitAnalysis(root_manager)
+                plot_coord, active_chips = analysis.plot_coord, analysis.active_chips
+            except NAErrorNoHits:
+                plot_coord, active_chips = [], []
+            self.analysed.emit(self._root_path, list(plot_coord), list(active_chips))
         except Exception as e:
-            self.log_message.emit(f"[LIVE ERROR] Animation failed: {e}")
+            self.log_message.emit(f"[ANALYSIS ERROR] {Path(self._root_path).name}: {e}")
         finally:
             self.finished.emit()
 
@@ -246,16 +217,16 @@ class StandaloneAcquisitionWorker(QObject):
       2. Hace polling del .raw cada DAQ_POLL_INTERVAL segundos.
          Emite debug por señal en cada poll.
       3. Cuando el .raw ≥ RAW_SIZE_LIMIT_BYTES:
-         a. Para el DAQ (scan.abort())
-         b. Emite raw_cycle_done(xml_path, results_dir) para que la GUI
-            lance Raw2RootWorker en paralelo
-         c. Elimina el .raw ya procesado (el .root lo gestiona Raw2RootWorker)
-         d. Vuelve al paso 1 (nuevo ciclo — transparente para el usuario)
-      4. Si abort_flag se activa, sale limpiamente.
+         a. Para el DAQ limpiamente (scan.end_scan())
+         b. Emite raw_cycle_done(raw_path) para que la GUI convierta ese .raw
+         c. Vuelve al paso 1 (nuevo ciclo — transparente para el usuario)
+      4. STOP (end_scan): espera a que el DAQ cierre el .raw, emite
+         raw_cycle_done(raw_path) con el último tramo y sale.
+      5. ABORT (abort): mata el DAQ y sale sin emitir nada.
     """
 
     log_message    = pyqtSignal(str)
-    raw_cycle_done = pyqtSignal(Path, Path)   # (xml_path, results_dir)
+    raw_cycle_done = pyqtSignal(Path)   # .raw cerrado, listo para convertir
     finished       = pyqtSignal()
 
     def __init__(
@@ -270,7 +241,8 @@ class StandaloneAcquisitionWorker(QObject):
         self._triggers         = triggers
         self._vthresh_per_chip = vthresh_per_chip or {}
         self._raw_size_limit   = raw_size_limit
-        self._abort_flag       = False
+        self._stop_flag        = False   # STOP: parada limpia, se convierte el último tramo
+        self._abort_flag       = False   # ABORT: parada inmediata, no se convierte nada
         self._current_scan     = None
         self._cycle            = 0
 
@@ -279,7 +251,7 @@ class StandaloneAcquisitionWorker(QObject):
     # ------------------------------------------------------------------
 
     def end_scan(self):
-        self._abort_flag = True
+        self._stop_flag = True
         if self._current_scan is not None:
             try:
                 self._current_scan.end_scan()
@@ -305,38 +277,42 @@ class StandaloneAcquisitionWorker(QObject):
             f"size_limit={self._raw_size_limit // 1024**2} MB"
         )
 
-        while not self._abort_flag:
+        while not self._exit_requested():
             self._cycle += 1
             self._dbg(f"━━━ CYCLE {self._cycle} START ━━━")
 
-            success, xml_path, results_dir = self._run_one_cycle()
+            raw_path = self._run_one_cycle()
 
-            if not success:
-                if not self._abort_flag:
+            if raw_path is None:
+                if not self._exit_requested():
                     self._dbg("Cycle ended unexpectedly — stopping standalone.")
                 break
 
             self._dbg(f"━━━ CYCLE {self._cycle} END — emitting raw_cycle_done ━━━")
-            self.raw_cycle_done.emit(xml_path, results_dir)
+            self.raw_cycle_done.emit(raw_path)
 
         self._dbg("Standalone acquisition stopped.")
         self.finished.emit()
 
+    def _exit_requested(self) -> bool:
+        return self._stop_flag or self._abort_flag
+
     # ------------------------------------------------------------------
-    # Un ciclo de adquisición (con reintentos)
+    # Un ciclo de adquisición
     # ------------------------------------------------------------------
 
-    def _run_one_cycle(self) -> tuple[bool, Path | None, Path | None]:
+    def _run_one_cycle(self) -> Path | None:
         """
         Lanza el DAQ con -t -1 una sola vez y luego espera a que el .raw
-        supere el límite o llegue el abort.
+        supere el límite, llegue STOP o llegue ABORT.
 
-        Returns (success, xml_path, results_dir).
+        Returns el .raw cerrado que hay que convertir (rotación o STOP),
+        o None si no hay nada que convertir (ABORT o fallo).
         """
         from src.acquisition.scans.physics import PhysicsScan
 
-        if self._abort_flag:
-            return False, None, None
+        if self._exit_requested():
+            return None
 
         self._dbg("DAQ launch attempt 1/1")
 
@@ -374,25 +350,35 @@ class StandaloneAcquisitionWorker(QObject):
             daq_started.wait(timeout=5)
             self._dbg("DAQ thread running (attempt 1)")
 
-            # Polling del .raw hasta que supere el límite o abort/fin de DAQ
-            results_dir  = self._resolve_results_dir()
+            # Polling del .raw hasta que supere el límite o STOP/ABORT/fin de DAQ
+            results_dir  = _results_dir()
             raw_path     = self._poll_raw(daq_done, results_dir)
 
             if self._abort_flag:
                 scan.abort()
                 daq_done.wait(timeout=10)
-                return False, None, None
+                return None
+
+            if self._stop_flag:
+                # end_scan() ya envió el Enter: esperar a que el DAQ cierre el .raw
+                if not daq_done.wait(timeout=DAQ_CLOSE_TIMEOUT):
+                    self._dbg("DAQ did not close after Enter — sending SIGINT.")
+                    scan.abort()
+                    daq_done.wait(timeout=10)
+                last_raw = self._find_latest_raw(results_dir)
+                if last_raw is not None:
+                    self._dbg(f"Stopped — last .raw: {last_raw.name}")
+                return last_raw
 
             if raw_path is not None:
                 # .raw llegó al límite → detener el DAQ de este ciclo
                 size_mb = raw_path.stat().st_size // 1024 ** 2
                 self._dbg(f".raw reached {size_mb} MB — rotating (ending scan cleanly)")
                 scan.end_scan()
-                daq_done.wait(timeout=10)
+                daq_done.wait(timeout=DAQ_CLOSE_TIMEOUT)
 
-                xml_path = SystemConfig.get_xml_path()
-                self._dbg(f"Cycle {self._cycle} complete | xml={xml_path} results={results_dir}")
-                return True, xml_path, results_dir
+                self._dbg(f"Cycle {self._cycle} complete | raw={raw_path.name}")
+                return raw_path
 
             # Si daq_done se activó sin que raw_path sea válido → DAQ terminó solo
             if daq_done.is_set() and daq_error[0] is not None:
@@ -403,7 +389,7 @@ class StandaloneAcquisitionWorker(QObject):
             self.log_message.emit(f"[STANDALONE ERROR] {e}")
 
         self._dbg("Standalone acquisition did not start cleanly — stopping without retry.")
-        return False, None, None
+        return None
 
     # ------------------------------------------------------------------
     # Polling del .raw
@@ -412,14 +398,14 @@ class StandaloneAcquisitionWorker(QObject):
     def _poll_raw(self, daq_done: threading.Event, results_dir: Path) -> Path | None:
         """
         Polling en bucle hasta que:
-          - el .raw ≥ límite          → devuelve Path
-          - abort solicitado           → devuelve None
+          - el .raw ≥ límite           → devuelve Path
+          - STOP/ABORT solicitado      → devuelve None
           - DAQ terminó solo           → devuelve None
 
         Imprime el tamaño actual en cada iteración (debug).
         """
         poll_n = 0
-        while not self._abort_flag and not daq_done.is_set():
+        while not self._exit_requested() and not daq_done.is_set():
             if daq_done.wait(timeout=DAQ_POLL_INTERVAL):
                 break
 
@@ -448,12 +434,6 @@ class StandaloneAcquisitionWorker(QObject):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _resolve_results_dir(self) -> Path:
-        try:
-            return SystemConfig.get_root_path().parent
-        except Exception:
-            return Path("results")
-
     @staticmethod
     def _find_latest_raw(results_dir: Path) -> Path | None:
         try:
@@ -465,15 +445,6 @@ class StandaloneAcquisitionWorker(QObject):
             return raws[0] if raws else None
         except Exception:
             return None
-
-    def _cleanup_raw(self, raw_path: Path) -> None:
-        """Borra el .raw de ciclo anterior para liberar disco."""
-        try:
-            if raw_path and raw_path.exists():
-                raw_path.unlink()
-                self._dbg(f"Deleted {raw_path.name}")
-        except Exception as e:
-            self._dbg(f"Cleanup warning: {e}")
 
     def _dbg(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -496,17 +467,29 @@ class AcquisitionTab(QWidget):
         self._worker: QObject | None = None
         self._thread: QThread | None = None
         self._last_hit_analysis      = None
-        self._current_plotter        = None
 
         # Estado — Standalone
         self._standalone_worker: StandaloneAcquisitionWorker | None = None
         self._standalone_thread: QThread | None                     = None
-        self._r2r_thread: QThread | None        = None   # rotación 1 GB
-        self._live_r2r_thread: QThread | None   = None   # snapshot cada 60 s
-        self._anim_thread: QThread | None       = None
-        self._latest_root_path: str | None      = None
-        self._standalone_track_count: int       = 0
-        self._plotter_holder: list              = [None]  # ref al InteractiveCoincidencePlotter
+
+        # Procesado (conversión .raw → .root + HitAnalysis), de uno en uno.
+        # Los .raw cerrados (rotación / STOP) se encolan y nunca se descartan;
+        # el snapshot live solo se lanza si no hay nada en curso ni pendiente.
+        self._closed_raws: deque[Path]          = deque()
+        self._job_active: bool                  = False
+        self._job_closed: bool                  = False   # el job en curso es de un .raw cerrado
+        self._r2r_worker: Raw2RootWorker | None = None
+        self._r2r_thread: QThread | None        = None
+        self._hit_worker: HitAnalysisWorker | None = None
+        self._hit_thread: QThread | None        = None
+
+        # Panel de trayectorias: fichero mostrado y cuántos de sus tracks ya se dibujaron
+        self._shown_root: str | None = None
+        self._shown_tracks: int      = 0
+
+        # Contador de sesión = tracks de ficheros cerrados + tracks del fichero abierto
+        self._closed_tracks: int = 0
+        self._open_tracks: int   = 0
 
         # Timer de refresco de visualización — independiente del ciclo de rotación
         self._refresh_timer = QTimer(self)
@@ -693,10 +676,9 @@ class AcquisitionTab(QWidget):
         )
         layout.addWidget(self._traj_placeholder)
 
-        self._traj_container = QScrollArea()
-        self._traj_container.setWidgetResizable(True)
-        self._traj_container.hide()
-        layout.addWidget(self._traj_container)
+        self._trajectory_view = TrajectoryView()
+        self._trajectory_view.hide()
+        layout.addWidget(self._trajectory_view)
 
         return panel
 
@@ -723,6 +705,9 @@ class AcquisitionTab(QWidget):
             return
         if self._standalone_thread and self._standalone_thread.isRunning():
             self._log_write("[WARN] Acquisition already running.")
+            return
+        if self._job_active or self._closed_raws:
+            self._log_write("[WARN] Previous session still converting .raw files — wait for it to finish.")
             return
 
         self._log_write(f"[DEBUG] ph2_acf_dir={SystemConfig.get_ph2_acf_dir()}")
@@ -785,10 +770,11 @@ class AcquisitionTab(QWidget):
 
     def _start_standalone(self, chips: list[tuple[int, int]]):
         vthresh = {k: s.value() for k, s in self._vthresh_spinboxes.items()}
-        self._standalone_track_count = 0
-        self._latest_root_path       = None
-        self._last_hit_analysis      = None
-        self._plotter_holder         = [None]
+        self._last_hit_analysis = None
+        self._shown_root        = None
+        self._shown_tracks      = 0
+        self._closed_tracks     = 0
+        self._open_tracks       = 0
 
         self._standalone_worker = StandaloneAcquisitionWorker(
             chips=chips,
@@ -803,157 +789,172 @@ class AcquisitionTab(QWidget):
         self._standalone_worker.finished.connect(self._on_standalone_finished)
 
         self._set_running_ui(True)
-        self._standalone_status.setText("⬤  Acquiring…  |  Tracks: 0")
+        self._update_standalone_status()
         self._standalone_status.show()
 
         self._refresh_timer.start()
         self._standalone_thread.start()
 
-    def _on_raw_cycle_done(self, xml_path: Path, results_dir: Path):
+    def _on_raw_cycle_done(self, raw_path: Path):
+        """Un .raw se ha cerrado (rotación o STOP): se encola para convertirlo."""
+        self._log_write(f"[STANDALONE] Closed .raw queued for conversion: {raw_path.name}")
+        self._closed_raws.append(raw_path)
+        self._run_next_job()
+
+    def _trigger_live_snapshot(self):
         """
-        El .raw del ciclo completado está listo.
-        Lanzamos Raw2RootWorker en su propio hilo.
-        Si ya hay uno corriendo del ciclo anterior, lo dejamos terminar y
-        omitimos este (el DAQ ya está corriendo un nuevo ciclo de todas formas).
+        Llamado por el QTimer cada LIVE_REFRESH_MS.
+        Convierte el .raw activo para ver los tracks acumulados sin esperar a 1 GB.
+        Se salta si hay otro procesado en curso o pendiente.
         """
-        if self._r2r_thread and self._r2r_thread.isRunning():
-            self._log_write(
-                "[STANDALONE] raw2root from previous cycle still running — "
-                "skipping conversion for this cycle."
-            )
+        if not (self._standalone_thread and self._standalone_thread.isRunning()):
             return
 
-        worker = Raw2RootWorker(xml_path=xml_path, results_dir=results_dir)
+        if self._job_active or self._closed_raws:
+            self._log_write("[LIVE] Previous conversion still running — skipping tick.")
+            return
+
+        self._log_write("[LIVE] Snapshot tick — converting active .raw …")
+        self._start_job(raw_path=None)
+
+    # ------------------------------------------------------------------
+    # Procesado: .raw → .root → HitAnalysis (un job cada vez)
+    # ------------------------------------------------------------------
+
+    def _run_next_job(self):
+        if self._job_active or not self._closed_raws:
+            return
+        self._start_job(raw_path=self._closed_raws.popleft())
+
+    def _start_job(self, raw_path: Path | None):
+        """raw_path explícito → .raw cerrado; None → snapshot del .raw activo."""
+        try:
+            xml_path = SystemConfig.get_xml_path()
+        except Exception as e:
+            self._log_write(f"[STANDALONE] Cannot start conversion: {e}")
+            return
+
+        self._job_active = True
+        self._job_closed = raw_path is not None
+
+        worker = Raw2RootWorker(
+            xml_path=xml_path,
+            results_dir=_results_dir(),
+            raw_path=raw_path,
+            tag="RAW2ROOT" if self._job_closed else "LIVE R2R",
+        )
+        self._retire_thread(self._r2r_thread)
         self._r2r_worker = worker
         self._r2r_thread = QThread()
         worker.moveToThread(self._r2r_thread)
         self._r2r_thread.started.connect(worker.run)
         worker.log_message.connect(self._log_write)
-        worker.root_ready.connect(self._on_root_ready)
+        worker.root_ready.connect(self._on_job_root_ready)
+        worker.finished.connect(self._on_job_converted)
         worker.finished.connect(self._r2r_thread.quit)
         self._r2r_thread.start()
 
-    def _on_root_ready(self, root_path: str):
-        """
-        Callback del ciclo de ROTACIÓN (1 GB).
-        Actualiza la referencia al .root más reciente y dispara la visualización.
-        """
-        self._latest_root_path = root_path
-        self._log_write(f"[STANDALONE] Rotation ROOT ready: {Path(root_path).name}")
-        self._launch_analysis_and_animation(root_path)
+    @staticmethod
+    def _retire_thread(thread: QThread | None):
+        """Cierra el hilo del job anterior antes de soltar su referencia."""
+        if thread is not None:
+            thread.quit()
+            thread.wait()
 
-    def _trigger_live_snapshot(self):
-        """
-        Llamado por el QTimer cada 60 s.
-        Lanza LiveRaw2RootWorker sobre el .raw activo para obtener un .root
-        con los datos acumulados hasta ese momento, sin esperar a 1 GB.
-        """
-        if not (self._standalone_thread and self._standalone_thread.isRunning()):
-            return
+    def _on_job_converted(self, success: bool):
+        # Si la conversión falló no habrá análisis: el job termina aquí
+        if not success:
+            self._end_job()
 
-        # Si ya hay una conversión live en curso, esperar al siguiente tick
-        if self._live_r2r_thread and self._live_r2r_thread.isRunning():
-            self._log_write("[LIVE] Previous snapshot conversion still running — skipping tick.")
-            return
-
-        try:
-            xml_path    = SystemConfig.get_xml_path()
-            results_dir = self._resolve_results_dir()
-        except Exception as e:
-            self._log_write(f"[LIVE] Cannot start snapshot: {e}")
-            return
-
-        self._log_write("[LIVE] 60 s tick — converting .raw snapshot …")
-        worker = LiveRaw2RootWorker(xml_path=xml_path, results_dir=results_dir)
-        self._live_r2r_worker = worker
-        self._live_r2r_thread = QThread()
-        worker.moveToThread(self._live_r2r_thread)
-        self._live_r2r_thread.started.connect(worker.run)
+    def _on_job_root_ready(self, root_path: str):
+        worker = HitAnalysisWorker(root_path)
+        self._retire_thread(self._hit_thread)
+        self._hit_worker = worker
+        self._hit_thread = QThread()
+        worker.moveToThread(self._hit_thread)
+        self._hit_thread.started.connect(worker.run)
         worker.log_message.connect(self._log_write)
-        worker.root_ready.connect(self._on_live_root_ready)
-        worker.finished.connect(self._live_r2r_thread.quit)
-        self._live_r2r_thread.start()
+        worker.analysed.connect(self._on_job_analysed)
+        worker.finished.connect(self._end_job)
+        worker.finished.connect(self._hit_thread.quit)
+        self._hit_thread.start()
 
-    def _on_live_root_ready(self, root_path: str):
-        """Callback del ciclo de VISUALIZACIÓN (60 s)."""
-        self._log_write(f"[LIVE] Snapshot ROOT ready: {Path(root_path).name}")
-        self._launch_analysis_and_animation(root_path)
+    def _on_job_analysed(self, root_path: str, plot_coord: list, active_chips: list):
+        n = len(plot_coord)
+        self._log_write(f"[LIVE] {Path(root_path).name}: {n} tracks")
 
-    def _launch_analysis_and_animation(self, root_path: str):
-        """
-        Punto de entrada común para ambos ciclos (rotación y visualización).
-        Ejecuta HitAnalysis sobre el .root indicado y lanza la animación
-        en un hilo aparte (InteractiveCoincidencePlotter usa time.sleep y
-        bloquearía la GUI si se llamara aquí directamente).
-        """
-        # No lanzar nueva animación si la anterior sigue corriendo
-        if self._anim_thread and self._anim_thread.isRunning():
-            self._log_write("[LIVE] Animation still running — skipping this refresh.")
-            return
+        self._show_file_tracks(root_path, plot_coord, active_chips)
 
-        try:
-            from src.analysis.analysis_hit import HitAnalysis
+        if self._job_closed:
+            self._closed_tracks += n
+            self._open_tracks    = 0
+        else:
+            self._open_tracks = n
+        self._update_standalone_status()
 
-            root_manager = SystemConfig.create_root_manager(path=root_path)
-            root_manager.load()
-
-            analysis = HitAnalysis(root_manager)
-            n_new    = len(analysis.plot_coord)
-
-            if n_new == 0:
-                self._log_write("[LIVE] No tracks in ROOT file.")
-                return
-
-            self._last_hit_analysis       = analysis
-            self._standalone_track_count += n_new
-            self._standalone_status.setText(
-                f"⬤  Acquiring…  |  Tracks this session: {self._standalone_track_count}"
-            )
-            self._btn_save_traj.setEnabled(True)
-
-            anim_worker = TrajectoryAnimationWorker(
-                plot_coord_data=analysis.plot_coord,
-                active_chips=SystemConfig.get_active_chip_keys(),
-                plotter_ref=self._plotter_holder,
-            )
-            self._anim_thread = QThread()
-            anim_worker.moveToThread(self._anim_thread)
-            self._anim_thread.started.connect(anim_worker.run)
-            anim_worker.log_message.connect(self._log_write)
-            anim_worker.finished.connect(self._anim_thread.quit)
-            self._anim_thread.start()
-
+    def _end_job(self):
+        self._job_active = False
+        self._run_next_job()
+        if not self._job_active and not self._is_standalone_running():
             self._log_write(
-                f"[LIVE] Launching animation — {n_new} new tracks "
-                f"(session total: {self._standalone_track_count})"
+                f"[STANDALONE] Session ended — {self._session_tracks()} total tracks."
             )
 
-        except Exception as e:
-            self._log_write(f"[LIVE ERROR] {e}")
-            self.logger.exception("Standalone refresh error")
+    # ------------------------------------------------------------------
+    # Panel de trayectorias y contador
+    # ------------------------------------------------------------------
 
-    def _resolve_results_dir(self) -> Path:
-        try:
-            return SystemConfig.get_root_path().parent
-        except Exception:
-            return Path("results")
+    def _show_file_tracks(self, root_path: str, plot_coord: list, active_chips: list):
+        """
+        Muestra todos los tracks del fichero analizado. Si es el mismo fichero
+        que ya está en el panel, solo se animan los que no se habían dibujado.
+        """
+        if root_path != self._shown_root:
+            self._shown_root   = root_path
+            self._shown_tracks = 0
+            self._trajectory_view.reset(active_chips)
+            self._show_trajectory_view()
+
+        new_tracks = plot_coord[self._shown_tracks:]
+        if new_tracks:
+            self._trajectory_view.animate(new_tracks)
+            self._btn_save_traj.setEnabled(True)
+        self._shown_tracks = max(self._shown_tracks, len(plot_coord))
+
+    def _show_trajectory_view(self):
+        self._traj_placeholder.hide()
+        self._trajectory_view.show()
+
+    def _session_tracks(self) -> int:
+        return self._closed_tracks + self._open_tracks
+
+    def _update_standalone_status(self):
+        state = "Acquiring…" if self._running else "Stopped"
+        self._standalone_status.setText(
+            f"⬤  {state}  |  Tracks this session: {self._session_tracks()}"
+        )
+
+    def _is_standalone_running(self) -> bool:
+        return bool(self._standalone_thread and self._standalone_thread.isRunning())
 
     def _on_standalone_finished(self):
         self._refresh_timer.stop()
         self._set_running_ui(False)
-        self._standalone_status.setText("⬤  Stopped")
 
         if self._standalone_thread:
             self._standalone_thread.quit()
             self._standalone_thread.wait()
 
-        # Último snapshot por si quedaron datos sin visualizar
-        if self._latest_root_path and Path(self._latest_root_path).exists():
-            self._launch_analysis_and_animation(self._latest_root_path)
+        self._update_standalone_status()
+        # Con tracks ya dibujados, Save Plot sigue disponible tras parar
+        self._btn_save_traj.setEnabled(self._shown_tracks > 0)
 
-        self._log_write(
-            f"[STANDALONE] Session ended — {self._standalone_track_count} total tracks."
-        )
+        if self._job_active or self._closed_raws:
+            self._log_write("[STANDALONE] Acquisition stopped — finishing pending conversions …")
+        else:
+            self._log_write(
+                f"[STANDALONE] Session ended — {self._session_tracks()} total tracks."
+            )
 
     # ==================================================================
     # Abort
@@ -1178,7 +1179,6 @@ class AcquisitionTab(QWidget):
                 return
 
             self._btn_show_traj.setEnabled(True)
-            self._btn_save_traj.setEnabled(True)
             self._log_write("[DONE] Ready to visualize trajectories.")
 
         except Exception as e:
@@ -1193,32 +1193,22 @@ class AcquisitionTab(QWidget):
         if self._last_hit_analysis is None:
             self._log_write("[WARN] No analysis data available.")
             return
-        try:
-            from src.plotter.trajectory_interactive import InteractiveCoincidencePlotter
-
-            self._current_plotter = InteractiveCoincidencePlotter(
-                plot_coord_data=self._last_hit_analysis.plot_coord,
-                active_chips=SystemConfig.get_active_chip_keys(),
-            )
-            self._current_plotter.plot_multiple_events()
-            self._log_write(
-                f"[INFO] Showing {len(self._last_hit_analysis.plot_coord)} trajectories."
-            )
-        except Exception as e:
-            self._log_write(f"[ERROR] Cannot show trajectories: {e}")
+        plot_coord = self._last_hit_analysis.plot_coord
+        self._shown_root   = None
+        self._shown_tracks = len(plot_coord)
+        self._trajectory_view.reset(self._last_hit_analysis.active_chips)
+        self._show_trajectory_view()
+        self._trajectory_view.animate(plot_coord)
+        self._btn_save_traj.setEnabled(True)
+        self._log_write(f"[INFO] Showing {len(plot_coord)} trajectories.")
 
     def _save_trajectories(self):
-        # En standalone el plotter vive en self._plotter_holder[0]
-        plotter = self._current_plotter or self._plotter_holder[0]
-        if plotter is None:
-            self._log_write("[WARN] No active plotter — show trajectories first.")
-            return
         try:
             try:
                 output_dir = SystemConfig.get_root_path().parent / "plots"
             except Exception:
                 output_dir = None
-            path = plotter.save(output_dir)
+            path = self._trajectory_view.save(output_dir)
             self._log_write(f"[OK]   Plot saved: {path}")
         except Exception as e:
             self._log_write(f"[ERROR] Cannot save plot: {e}")

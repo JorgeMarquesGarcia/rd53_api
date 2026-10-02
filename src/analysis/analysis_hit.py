@@ -8,6 +8,7 @@ from src.core.exceptions import NAErrorNoHits
 
 SENSOR_ROWS = 192
 SENSOR_COLS = 400
+TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
 
 OFFSETS = {
     0: (0, 0),
@@ -36,10 +37,11 @@ Funciones principales:
 class HitAnalysis(BaseAnalysis):
     """Clase de análisis para datos de hits provenientes de archivos ROOT."""
 
-    def __init__(self, root_manager: RootManager):
+    def __init__(self, root_manager: RootManager, tot_threshold: int = TOT_THRESHOLD):
         """Inicializa el analizador y prepara los hits filtrados."""
         super().__init__(root_manager)
         self.logger.info("HitAnalysis initialized successfully")
+        self.tot_threshold = tot_threshold
         self.trigger_data = None
         self.hits = None
         self.plot_coord = None
@@ -58,8 +60,10 @@ class HitAnalysis(BaseAnalysis):
         coincidence_hits = self.coincidence()
         self.logger.info(f"Coincidence filter applied: {len(coincidence_hits)} events with hits in other chips")
 
-        tot_filter = self._tot_filter(coincidence_hits, tot_threshold=1)
-        self.logger.info(f"ToT filter applied: {len(tot_filter)} events with ToT >= 1")
+        tot_filter = self._tot_filter(coincidence_hits, tot_threshold=self.tot_threshold)
+        self.logger.info(
+            f"ToT filter applied: {len(tot_filter)} events with some hit ToT >= {self.tot_threshold}"
+        )
         hits = tot_filter
         self._analyzed = True
         return hits
@@ -87,16 +91,16 @@ class HitAnalysis(BaseAnalysis):
             data = self.trigger_data
         return data[ak.sum(data.RD53_frame_event_nhits[:, 1:], axis=1) >= 1]
 
-    def filter_tot(self, data=None, tot_threshold=1):
+    def filter_tot(self, data=None, tot_threshold=TOT_THRESHOLD):
         """Filtra eventos cuyo ToT cumple el umbral definido."""
         self._analyzed = True
         return self._tot_filter(data=data, tot_threshold=tot_threshold)
-  
-    def _tot_filter(self, data=None, tot_threshold=1):
-        """Implementa el filtro por ToT."""
+
+    def _tot_filter(self, data=None, tot_threshold=TOT_THRESHOLD):
+        """Descarta el evento entero solo si TODOS sus hits tienen ToT < umbral."""
         if data is None:
             data = self.trigger_data
-        return data[ak.all(data.RD53_hit_tot >= tot_threshold, axis=1)]
+        return data[ak.any(data.RD53_hit_tot >= tot_threshold, axis=1)]
     
 
     def coincidence_filter_layer(self, data=None, layer=[]):
