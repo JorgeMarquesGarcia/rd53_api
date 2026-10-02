@@ -24,6 +24,7 @@ from src.core.results_finder import (
     latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
 )
+from src.gui.tabs.acquisition_tab import Raw2RootWorker
 from src.plotter.calibration_view import discover_chips, build_chip_plots_widget
 
 MODE_CALIBRATION = 0
@@ -51,6 +52,8 @@ class AnalysisTab(QWidget):
         self._chip_checks: list[tuple[tuple[int, int], QCheckBox]] = []
         self._file_tabs: dict[str, QWidget] = {}   # ruta -> pestaña de resultados
         self._conversion_thread: QThread | None = None
+        self._conversion_worker: Raw2RootWorker | None = None  # (sin import de tipo si prefieres: dejarlo sin anotar)
+        self._conversion_ok: bool = False
 
         self._build_ui()
         self._refresh_recent()
@@ -342,6 +345,7 @@ class AnalysisTab(QWidget):
             self._log_write(f"[ERROR] Cannot start RAW to ROOT conversion: {e}")
             return
 
+        self._conversion_worker = worker   
         self._btn_convert.setEnabled(False)
         self._log_write(f"[START] Converting {path.name} to ROOT...")
         self._conversion_thread = QThread(self)
@@ -350,14 +354,25 @@ class AnalysisTab(QWidget):
         worker.log_message.connect(self._log_write)
         worker.finished.connect(self._conversion_thread.quit)
         worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_conversion_result)
         self._conversion_thread.finished.connect(self._on_conversion_finished)
         self._conversion_thread.finished.connect(self._conversion_thread.deleteLater)
         self._conversion_thread.start()
 
+    def _on_conversion_result(self, ok: bool):
+        self._conversion_ok = ok
+        if ok:
+            self._log_write("[OK] RAW to ROOT conversion finished.")
+        else:
+            self._log_write("[ERROR] RAW to ROOT conversion FAILED — see messages above.")
+
     def _on_conversion_finished(self):
+        self._conversion_thread = None
+        self._conversion_worker = None
         self._btn_convert.setEnabled(True)
         self._refresh_recent()
         self._log_write("[OK] RAW to ROOT conversion finished.")
+    
 
     # ==================================================================
     # Lista de recientes / fichero seleccionado

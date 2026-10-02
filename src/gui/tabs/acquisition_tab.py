@@ -116,23 +116,25 @@ class Raw2RootWorker(QObject):
     Corre en su propio QThread para no bloquear ni el DAQ ni la GUI.
     """
     log_message = pyqtSignal(str)
-    root_ready  = pyqtSignal(str)   # path absoluto al .root generado
-    finished    = pyqtSignal()
+    root_ready  = pyqtSignal(str)   
+    finished    = pyqtSignal(bool)
 
     def __init__(self, xml_path: Path, results_dir: Path, raw_path: Path | None = None):
         super().__init__()
         self._xml_path    = xml_path
         self._results_dir = results_dir
         self._raw_path    = raw_path
+        self._r2r_worker = None
+        self._live_r2r_worker = None
+
 
     def run(self):
+        success = False
         self._dbg("Converting .raw → .root …")
         try:
             from src.acquisition.scans.physics import PhysicsScan
 
-            # Instancia mínima solo para acceder a run_raw2root()
             scan = PhysicsScan.__new__(PhysicsScan)
-
             _, root_path = scan.run_raw2root(
                 xml_path=self._xml_path,
                 results_dir=self._results_dir,
@@ -141,11 +143,12 @@ class Raw2RootWorker(QObject):
             )
             self._dbg(f"Done → {root_path.name}")
             self.root_ready.emit(str(root_path))
+            success = True
 
         except Exception as e:
             self.log_message.emit(f"[RAW2ROOT ERROR] {e}")
         finally:
-            self.finished.emit()
+            self.finished.emit(success)
 
     def _dbg(self, msg: str):
         self.log_message.emit(f"[RAW2ROOT] {msg}")
@@ -821,6 +824,7 @@ class AcquisitionTab(QWidget):
             return
 
         worker = Raw2RootWorker(xml_path=xml_path, results_dir=results_dir)
+        self._r2r_worker = worker
         self._r2r_thread = QThread()
         worker.moveToThread(self._r2r_thread)
         self._r2r_thread.started.connect(worker.run)
@@ -861,6 +865,7 @@ class AcquisitionTab(QWidget):
 
         self._log_write("[LIVE] 60 s tick — converting .raw snapshot …")
         worker = LiveRaw2RootWorker(xml_path=xml_path, results_dir=results_dir)
+        self._live_r2r_worker = worker
         self._live_r2r_thread = QThread()
         worker.moveToThread(self._live_r2r_thread)
         self._live_r2r_thread.started.connect(worker.run)

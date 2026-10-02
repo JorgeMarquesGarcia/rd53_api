@@ -6,6 +6,8 @@ from src.remote.terminal import Terminal
 from src.acquisition.maps import AcquisitionMap
 from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
 from src.config.system_config import SystemConfig
+import logging
+logger = logging.getLogger(__name__)  
 
 
 class AcquisitionScan(ABC):
@@ -96,21 +98,11 @@ class AcquisitionScan(ABC):
 
         return output
     
-    def run_raw2root(self, xml_path: str | Path, results_dir: str | Path,
-                      cwd: str | Path | None = None, timeout: int = 60,
-                      line_callback=None, raw_path: str | Path | None = None) -> tuple[str, Path]:
-        """
-        Ejecuta el volcado binario (-b) del run actual, usando el run number
-        de num_manager. No depende de una instancia de Scan (no usa chips ni
-        scan_time), así que puede llamarse desde timed, continuous o donde
-        haga falta.
-        """
+    def run_raw2root(self, xml_path, results_dir, cwd=None, timeout: int = 180,
+                 line_callback=None, raw_path=None) -> tuple[str, Path]:
         from src.core import num_manager
-        from src.remote.terminal import Terminal
-        from src.config.system_config import SystemConfig
 
-        if cwd is None:
-            cwd = SystemConfig.get_txt_base_dir()
+        cwd = Path(cwd) if cwd is not None else SystemConfig.get_txt_base_dir()
 
         if raw_path is None:
             run_str = str(num_manager.get() - 1).zfill(6)
@@ -118,21 +110,30 @@ class AcquisitionScan(ABC):
         else:
             binary_path = Path(raw_path)
 
-        ph2_acf_dir = SystemConfig.get_ph2_acf_dir()
-        setup_script = ph2_acf_dir / "setup.sh"
-        inner_cmd = (
-            f"cd {shlex.quote(str(ph2_acf_dir))} && "
-            f"source {shlex.quote(str(setup_script))} && "
-            f"cd {shlex.quote(str(cwd))} && "
-            f"CMSITminiDAQ -f CMSIT_RD53A.xml "
-            f"-b {shlex.quote(str(binary_path.resolve()))}"
-        )
-        cmd = f"bash -lc {shlex.quote(inner_cmd)}"
+        # El .raw se pasa relativo a txt_base_dir (p. ej. Results/RunXXX.raw)
+        try:
+            raw_arg = str(binary_path.resolve().relative_to(cwd.resolve()))
+        except ValueError:
+            logger.warning("%s is outside %s; using absolute path.", binary_path, cwd)
+            raw_arg = str(binary_path.resolve())
+
+        cmd = f"CMSITminiDAQ -f {shlex.quote(str(xml_path))} -b {shlex.quote(raw_arg)}"
+        logger.info("raw2root: %s  (cwd=%s)", cmd, cwd)
 
         with Terminal(timeout=timeout, line_callback=line_callback) as term:
-            output = term.run(cmd, cwd=cwd)
+            output, matched = term.run_scan(cmd, cwd=str(cwd))
 
-        return output, binary_path
+        if matched is None:
+            logger.error("raw2root did not finish cleanly for %s (no end pattern found).", binary_path.name)
+            raise RuntimeError(f"raw2root failed for {binary_path.name}: no end pattern found")
+
+        root_path = binary_path.with_suffix(".root")
+        if not root_path.exists():
+            logger.error("raw2root finished but %s was not created.", root_path.name)
+            raise RuntimeError(f"raw2root finished but {root_path.name} was not created")
+
+        logger.info("raw2root finished: %s", root_path.name)
+        return output, root_path
 
     @property
     def scan_ended(self) -> bool:
