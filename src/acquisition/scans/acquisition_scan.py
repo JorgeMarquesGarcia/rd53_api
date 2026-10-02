@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 # Línea con la que CMSITminiDAQ anuncia el .raw que está escribiendo,
 # p. ej. "Saving binary data into: Results/Run000298_Physics_Board000.raw"
 RAW_FILE_PATTERN = re.compile(r"Saving binary data into:\s*(\S+\.raw)")
+# Códigos de color ANSI que Ph2_ACF mete en sus logs (p. ej. "\033[1m\033[33m")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class AcquisitionScan(ABC):
@@ -99,7 +101,8 @@ class AcquisitionScan(ABC):
 
         def _on_line(line: str):
             if self.raw_path is None:
-                match = RAW_FILE_PATTERN.search(line)
+                # Sin quitar los colores, la ruta capturada arrastra el "\033[...m"
+                match = RAW_FILE_PATTERN.search(ANSI_ESCAPE_PATTERN.sub("", line))
                 if match:
                     # La ruta que imprime el DAQ es relativa a su cwd (txt_dir)
                     self.raw_path = Path(self.txt_dir) / match.group(1)
@@ -129,6 +132,10 @@ class AcquisitionScan(ABC):
             binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
         else:
             binary_path = Path(raw_path)
+
+        # CMSITminiDAQ no avisa si el .raw no existe: lee basura y acaba en std::bad_alloc
+        if not binary_path.is_file():
+            raise FileNotFoundError(f"raw2root: .raw not found: {binary_path}")
 
         # El .raw se pasa relativo a txt_base_dir (p. ej. Results/RunXXX.raw)
         try:
