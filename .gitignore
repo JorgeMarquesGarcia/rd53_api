@@ -24,3 +24,6 @@ src/test/
 PAToken.txt 
 CMSIT_RD53A*
 RD53A_GUI/
+src/gui/widgets.py
+md/
+

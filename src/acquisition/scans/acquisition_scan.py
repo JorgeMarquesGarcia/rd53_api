@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
+import shlex
 from src.remote.terminal import Terminal
 from src.acquisition.maps import AcquisitionMap
 from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
@@ -97,7 +98,7 @@ class AcquisitionScan(ABC):
     
     def run_raw2root(self, xml_path: str | Path, results_dir: str | Path,
                       cwd: str | Path | None = None, timeout: int = 60,
-                      line_callback=None) -> tuple[str, Path]:
+                      line_callback=None, raw_path: str | Path | None = None) -> tuple[str, Path]:
         """
         Ejecuta el volcado binario (-b) del run actual, usando el run number
         de num_manager. No depende de una instancia de Scan (no usa chips ni
@@ -111,12 +112,25 @@ class AcquisitionScan(ABC):
         if cwd is None:
             cwd = SystemConfig.get_txt_base_dir()
 
-        run_str = str(num_manager.get() - 1).zfill(6)
-        binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
-        cmd = f"CMSITminiDAQ -f {xml_path} -b {binary_path}"
+        if raw_path is None:
+            run_str = str(num_manager.get() - 1).zfill(6)
+            binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
+        else:
+            binary_path = Path(raw_path)
+
+        ph2_acf_dir = SystemConfig.get_ph2_acf_dir()
+        setup_script = ph2_acf_dir / "setup.sh"
+        inner_cmd = (
+            f"cd {shlex.quote(str(ph2_acf_dir))} && "
+            f"source {shlex.quote(str(setup_script))} && "
+            f"cd {shlex.quote(str(cwd))} && "
+            f"CMSITminiDAQ -f CMSIT_RD53A.xml "
+            f"-b {shlex.quote(str(binary_path.resolve()))}"
+        )
+        cmd = f"bash -lc {shlex.quote(inner_cmd)}"
 
         with Terminal(timeout=timeout, line_callback=line_callback) as term:
-            output, matched_pattern = term.run_scan(cmd, cwd=cwd)
+            output = term.run(cmd, cwd=cwd)
 
         return output, binary_path
 

@@ -82,6 +82,8 @@ class BaseAnalysis(ABC):
 		# Seleccionar solo las columnas necesarias
 		required_columns = [
 			'event',
+			'FW_frame_event_hybrid_id',
+			'FW_frame_event_chip_lane',
 			'RD53_frame_event_nhits',
 			'RD53_hit_row',
 			'RD53_hit_col',

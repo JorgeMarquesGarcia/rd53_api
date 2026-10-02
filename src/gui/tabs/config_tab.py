@@ -9,13 +9,14 @@ from PyQt5.QtWidgets import (
     QGroupBox, QLabel, QLineEdit, QPushButton,
     QCheckBox, QFileDialog, QMessageBox, QSplitter,
     QScrollArea, QSpacerItem, QSizePolicy, QPlainTextEdit,
-    QComboBox, QListWidget, QListWidgetItem,
+    QComboBox, QListWidget, QListWidgetItem, QSpinBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
 from src.config.xml.xml_manager import XmlManager
+from src.chip.register_map import ChipSettings
 
 SETTINGS_FILE = Path.home() / ".rd53a_gui_settings.json"
 
@@ -51,6 +52,10 @@ class ConfigTab(QWidget):
         self._txt_combo: dict[tuple[int, int], QComboBox] = {}
         self._txt_rows:  dict[tuple[int, int], QWidget]   = {}
         self._txt_file_list: QListWidget | None = None
+        self._vthreshold_spinboxes: dict[tuple[int, int], QSpinBox] = {}
+        self._vthreshold_checkboxes: dict[tuple[int, int], QCheckBox] = {}
+        self._vthreshold_values: dict[tuple[int, int], int] = {}
+        self._vthreshold_manual: set[tuple[int, int]] = set()
 
         self._build_ui()
         self._load_settings()
@@ -122,7 +127,9 @@ class ConfigTab(QWidget):
             hybrid_id = layer_info["hybrid"]
 
             if layer_info["single"]:
-                cb = QCheckBox("Chip 0  (single sensor)")
+                chip_widget, cb = self._build_chip_control(
+                    hybrid_id, 0, "Chip 0  (single sensor)"
+                )
                 cb.setChecked(True)
                 key = (hybrid_id, 0)
                 self._chip_checks[key] = cb
@@ -130,7 +137,7 @@ class ConfigTab(QWidget):
                 cb.toggled.connect(
                     lambda checked, h=hybrid_id: self._on_chip_checkbox_toggled(h, checked)
                 )
-                layer_layout.addWidget(cb)
+                layer_layout.addWidget(chip_widget)
 
                 # "All" maestro, empujado al extremo derecho de la caja.
                 layer_layout.addStretch(1)
@@ -141,9 +148,11 @@ class ConfigTab(QWidget):
                 grid.setVerticalSpacing(8)
                 positions = {0: (1,0), 1: (1,1), 2: (0,0), 3: (0,1)}
                 for chip_id in layer_info["chips"]:
-                    cb = QCheckBox(f"Chip {chip_id}")
+                    chip_widget, cb = self._build_chip_control(
+                        hybrid_id, chip_id + offset, f"Chip {chip_id}"
+                    )
                     row, col = positions[chip_id]
-                    grid.addWidget(cb, row, col)
+                    grid.addWidget(chip_widget, row, col)
                     key = (hybrid_id, chip_id)
                     self._chip_checks[key] = cb
                     self._chip_to_rd53[key] = chip_id + offset
@@ -217,6 +226,53 @@ class ConfigTab(QWidget):
         summary_layout.addWidget(self._summary_box)
         layout.addWidget(summary_group, 1)
         return panel
+
+    def _build_chip_control(
+        self, hybrid_id: int, rd53_id: int, label: str
+    ) -> tuple[QWidget, QCheckBox]:
+        widget = QWidget()
+        row = QHBoxLayout(widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        checkbox = QCheckBox(label)
+        row.addWidget(checkbox)
+
+        spinbox = QSpinBox()
+        spinbox.setRange(0, 1000)
+        spinbox.setValue(0)
+        spinbox.setSpecialValueText("Vthreshold")
+        spinbox.setMinimumWidth(105)
+        spinbox.setMaximumWidth(105)
+        spinbox.setStyleSheet("QSpinBox { font-size: 9px; }")
+        spinbox.setEnabled(False)
+        spinbox.valueChanged.connect(
+            lambda _value, key=(hybrid_id, rd53_id): self._vthreshold_manual.add(key)
+        )
+        spinbox.editingFinished.connect(
+            lambda key=(hybrid_id, rd53_id): self._vthreshold_manual.add(key)
+        )
+        row.addWidget(spinbox)
+
+        checkbox.toggled.connect(
+            lambda checked, key=(hybrid_id, rd53_id): self._on_vthreshold_toggled(
+                key, checked
+            )
+        )
+        key = (hybrid_id, rd53_id)
+        self._vthreshold_spinboxes[key] = spinbox
+        self._vthreshold_checkboxes[key] = checkbox
+        return widget, checkbox
+
+    def _on_vthreshold_toggled(self, key: tuple[int, int], checked: bool):
+        spinbox = self._vthreshold_spinboxes[key]
+        spinbox.setEnabled(checked)
+        spinbox.setSpecialValueText("" if checked else "Vthreshold")
+        spinbox.blockSignals(True)
+        spinbox.setValue(0)
+        spinbox.blockSignals(False)
+        if not checked:
+            self._vthreshold_manual.discard(key)
 
     # ------------------------------------------------------------------
     # Checkboxes "All": selección/deselección cruzada de chips
@@ -319,8 +375,41 @@ class ConfigTab(QWidget):
 
         # Refrescar la lista de .txt disponibles cuando cambia el directorio
         self._path_edits["txt_base_dir"].textChanged.connect(self._refresh_txt_file_list)
+        self._path_edits["xml_path"].textChanged.connect(self._on_xml_path_changed)
 
         return panel
+
+    def _on_xml_path_changed(self, path: str):
+        if path and Path(path).exists():
+            self._load_vthresholds_from_xml(path)
+
+    def _load_vthresholds_from_xml(self, path: str):
+        try:
+            xml_mgr = XmlManager(path, read_only=True)
+            xml_mgr.load()
+        except Exception as e:
+            self.logger.warning("Cannot load Vthreshold_LIN values: %s", e)
+            return
+
+        for key, spinbox in self._vthreshold_spinboxes.items():
+            try:
+                raw = xml_mgr.get_chip_setting(*key, ChipSettings.VTHRESHOLD_LIN)
+                value = int(str(raw).strip())
+                if 0 <= value <= 1000:
+                    self._vthreshold_values[key] = value
+                    spinbox.blockSignals(True)
+                    spinbox.setValue(0)
+                    spinbox.setSpecialValueText(
+                        "" if self._vthreshold_checkboxes[key].isChecked()
+                        else "Vthreshold"
+                    )
+                    spinbox.blockSignals(False)
+                    self._vthreshold_manual.discard(key)
+            except Exception as e:
+                self.logger.warning(
+                    "Cannot read Vthreshold_LIN for H%d Chip%d: %s",
+                    key[0], key[1], e,
+                )
 
     # ------------------------------------------------------------------
     # Caja: ficheros TXT de configuración por chip
@@ -569,6 +658,20 @@ class ConfigTab(QWidget):
             for (hybrid_id, rd53_id), is_active in sorted(chip_selection.items()):
                 try:
                     xml_mgr.set_chip_enable(hybrid_id, rd53_id, is_active)
+
+                    threshold_spin = self._vthreshold_spinboxes.get((hybrid_id, rd53_id))
+                    threshold_key = (hybrid_id, rd53_id)
+                    if (
+                        is_active
+                        and threshold_spin is not None
+                        and threshold_key in self._vthreshold_manual
+                    ):
+                        xml_mgr.set_chip_setting(
+                            hybrid_id,
+                            rd53_id,
+                            ChipSettings.VTHRESHOLD_LIN,
+                            threshold_spin.value(),
+                        )
 
                     # Si el usuario ha escrito/elegido un nombre distinto en
                     # la caja "CHIP TXT CONFIG FILES", lo persistimos en el XML.

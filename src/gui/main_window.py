@@ -15,6 +15,7 @@ from src.workflow.system_state import SystemState
 from src.gui.tabs.config_tab       import ConfigTab
 from src.gui.tabs.calibration_tab  import CalibrationTab
 from src.gui.tabs.acquisition_tab  import AcquisitionTab
+from src.gui.tabs.analysis_tab import AnalysisTab
 
 # ---------------------------------------------------------------------------
 # Paleta de colores — estilo osciloscopio / industrial oscuro
@@ -234,6 +235,7 @@ class MainWindow(QMainWindow):
         self._build_status_bar()
         self._start_state_polling()
         self.calibration_tab.plots_loading.connect(self._on_plots_loading)
+        self.analysis_tab.plots_loading.connect(self._on_plots_loading)
 
         self.logger.info("MainWindow inicializado.")
 
@@ -247,13 +249,16 @@ class MainWindow(QMainWindow):
         self.config_tab      = ConfigTab(self)
         self.calibration_tab = CalibrationTab(self)
         self.acquisition_tab = AcquisitionTab(self)
+        self.analysis_tab    = AnalysisTab(self)
 
         self.tabs.addTab(self.config_tab,      "CONFIG")
         self.tabs.addTab(self.calibration_tab, "CALIBRATION")
         self.tabs.addTab(self.acquisition_tab, "ACQUISITION")
+        self.tabs.addTab(self.analysis_tab,    "ANALYSIS")
 
         # Conectar señal de configuración aplicada
         self.config_tab.config_applied.connect(self._on_config_applied)
+        self.analysis_tab.on_config_applied()
 
     def _build_status_bar(self):
         self.status_bar = QStatusBar()
@@ -298,6 +303,7 @@ class MainWindow(QMainWindow):
             f"| Cols: {SystemConfig.get_active_columns()}"
         )
         self.acquisition_tab.on_config_applied()
+        self.analysis_tab.on_config_applied()
         self.logger.info("Configuración aplicada correctamente.")
 
     def _on_plots_loading(self, loading: bool):
