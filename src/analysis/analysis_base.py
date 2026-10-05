@@ -33,6 +33,23 @@ RD53_hit_row/col/tot pertenecen al plano 0, los siguientes 3 al plano 1, etc.
 """
 
 
+def hits_per_chip(arrays) -> dict[tuple[int, int], int]:
+	"""Hits totales de cada chip (hybrid_id, chip_lane) en los arrays de un .root.
+
+	Usa el orden de frames del primer evento, que es el mismo en todos.
+	"""
+	if len(arrays) == 0:
+		return {}
+	chips = list(zip(ak.to_list(arrays.FW_frame_event_hybrid_id[0]),
+					 ak.to_list(arrays.FW_frame_event_chip_lane[0])))
+	totals = ak.to_list(ak.sum(arrays.RD53_frame_event_nhits, axis=0))
+	return {chip: int(n) for chip, n in zip(chips, totals)}
+
+
+def format_chips(chips) -> str:
+	return ", ".join(f"H{h}·{c}" for h, c in chips)
+
+
 class BaseAnalysis(ABC):
 	"""Common utilities shared by analysis classes based on ROOT data."""
 
@@ -53,6 +70,22 @@ class BaseAnalysis(ABC):
 		self.raw_data = self._select_required_columns(self.root_manager.arrays)
 		self.clean_data = self._remove_empty_events()
 		self.logger.info(f"Active chips detected: {self.active_chips}")
+		self._log_data_summary()
+
+	def _log_data_summary(self) -> None:
+		"""Resumen de los datos cargados: eventos, frames por evento y hits por chip."""
+		nhits = self.raw_data.RD53_frame_event_nhits
+		frames = sorted(set(ak.to_list(ak.num(nhits, axis=1))))
+		self.logger.info("Events in file: %d (frames per event: %s)", len(self.raw_data), frames)
+		self.hits_per_chip = hits_per_chip(self.raw_data)
+		self.logger.info("Hits per chip: %s", ", ".join(
+			f"H{h}·{c}: {n}" for (h, c), n in self.hits_per_chip.items()))
+		self.logger.info("Events with hits: %d of %d (%d hits in total)",
+						 len(self.clean_data), len(self.raw_data), int(ak.sum(nhits)))
+		empty = [chip for chip, n in self.hits_per_chip.items() if n == 0]
+		if empty:
+			self.logger.warning("No hits in %s in the whole file: check that these chips "
+								"are powered and enabled.", format_chips(empty))
 
 	def _validate(self) -> None: 
 		if not self.root_manager.is_loaded():

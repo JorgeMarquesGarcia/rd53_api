@@ -12,7 +12,7 @@ def build_noise_map_canvas(
     pixel_counts: dict[tuple[int, int], int],
     title: str = "",
 ) -> FigureCanvas:
-    """Canvas con los píxeles ruidosos de un chip coloreados por nº de eventos ruidosos.
+    """Canvas con los píxeles ruidosos de un chip coloreados por nº de hits con ToT bajo.
 
     Se dibujan como puntos (no imshow) para que un píxel aislado siga siendo
     visible en la matriz completa del chip.
@@ -31,7 +31,7 @@ def build_noise_map_canvas(
         # Colorbar como inset del propio eje: con aspect="equal" sigue pegada
         # al mapa en vez de quedarse en el borde de la figura.
         cax = ax.inset_axes([1.02, 0.0, 0.025, 1.0])
-        cbar = fig.colorbar(sc, cax=cax, label="Noisy events")
+        cbar = fig.colorbar(sc, cax=cax, label="Low-ToT hits")
         cbar.ax.yaxis.set_major_locator(MaxNLocator(integer=True))
 
     ax.set_xlim(-0.5, SENSOR_COLS - 0.5)

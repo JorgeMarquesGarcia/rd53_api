@@ -7,6 +7,7 @@ Fase 2: modo Calibration -> lista de chips del .root + botón PLOT +
 """
 from __future__ import annotations
 import logging
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -14,7 +15,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget, QTabBar, QToolButton,
-    QListWidget, QListWidgetItem, QTextEdit,
+    QListWidget, QListWidgetItem, QTextEdit, QSpinBox,
     QFileDialog, QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal
@@ -41,15 +42,58 @@ _SEGMENT_QSS = (
 )
 
 
+class _ThreadLogForwarder(logging.Handler):
+    """Reenvía al log de la GUI los mensajes de logging emitidos en un hilo concreto."""
+
+    def __init__(self, emit, tag: str):
+        super().__init__(level=logging.INFO)
+        self._emit = emit
+        self._tag = tag
+        self._thread = threading.get_ident()
+
+    def emit(self, record: logging.LogRecord):
+        if record.thread != self._thread:
+            return   # p. ej. un análisis del Acquisition tab corriendo a la vez
+        level = "" if record.levelno <= logging.INFO else f" {record.levelname}"
+        self._emit(f"[{self._tag}{level}] {record.getMessage()}")
+
+
+@contextmanager
+def forward_analysis_logs(emit, tag: str):
+    """Muestra en la GUI los logs de src.analysis del hilo actual mientras dure el bloque."""
+    logger = logging.getLogger("src.analysis")
+    handler = _ThreadLogForwarder(emit, tag)
+    old_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+
+class _HitAnalysisWorkerWithLogs(HitAnalysisWorker):
+    """HitAnalysisWorker que además vuelca los pasos del análisis en el log del tab."""
+
+    # El aviso de chips vacíos ya llega con los logs de BaseAnalysis
+    warn_empty_chips = False
+
+    def run(self):
+        with forward_analysis_logs(self.log_message.emit, "HITS"):
+            super().run()
+
+
 class NoiseAnalysisWorker(QObject):
     """Carga un .root y ejecuta NoiseAnalysis fuera del hilo de la GUI."""
     log_message = pyqtSignal(str)
     analysed    = pyqtSignal(str, object, object)   # (root_path, pixel_counts, stats)
     finished    = pyqtSignal()
 
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, min_repeats: int):
         super().__init__()
         self._root_path = root_path
+        self._min_repeats = min_repeats
 
     def run(self):
         try:
@@ -57,7 +101,8 @@ class NoiseAnalysisWorker(QObject):
 
             root_manager = SystemConfig.create_root_manager(path=self._root_path)
             root_manager.load(self._root_path)
-            analysis = NoiseAnalysis(root_manager)
+            with forward_analysis_logs(self.log_message.emit, "NOISE"):
+                analysis = NoiseAnalysis(root_manager, min_repeats=self._min_repeats)
             self.analysed.emit(self._root_path, analysis.noisy_pixel_counts, analysis.stats)
         except Exception as e:
             self.log_message.emit(f"[NOISE ERROR] {Path(self._root_path).name}: {e}")
@@ -252,6 +297,22 @@ class AnalysisTab(QWidget):
         self._btn_hits.setVisible(False)
         layout.addWidget(self._btn_hits)
 
+        from src.analysis.analysis_noise import MIN_REPEATS
+
+        self._noise_repeats_row = QWidget()
+        repeats_layout = QHBoxLayout(self._noise_repeats_row)
+        repeats_layout.setContentsMargins(0, 0, 0, 0)
+        repeats_layout.addWidget(QLabel("Noise: min. repeats per pixel (N)"))
+        self._spin_repeats = QSpinBox()
+        self._spin_repeats.setRange(2, 100000)
+        self._spin_repeats.setValue(MIN_REPEATS)
+        self._spin_repeats.setToolTip(
+            "A pixel with N or more hits with low ToT in the file is noisy "
+            "(besides the multiple-hits criterion)")
+        repeats_layout.addWidget(self._spin_repeats)
+        self._noise_repeats_row.setVisible(False)
+        layout.addWidget(self._noise_repeats_row)
+
         self._btn_noise = QPushButton("NOISE ANALYSIS")
         self._btn_noise.setObjectName("btn_launch")
         self._btn_noise.setToolTip("Find noisy pixels in the selected ROOT file and mask them")
@@ -347,6 +408,7 @@ class AnalysisTab(QWidget):
         self._btn_convert.setVisible(not is_cal)
         self._btn_hits.setVisible(not is_cal)
         self._btn_noise.setVisible(not is_cal)
+        self._noise_repeats_row.setVisible(not is_cal)
         self._chk_animate.setVisible(not is_cal)
 
         # Cambiar de modo invalida la selección anterior
@@ -440,7 +502,7 @@ class AnalysisTab(QWidget):
             self._log_write("[WARN] A hit analysis is already running.")
             return
 
-        worker = HitAnalysisWorker(str(path))
+        worker = _HitAnalysisWorkerWithLogs(str(path))
         self._hit_worker = worker
         self._btn_hits.setEnabled(False)
         self._log_write(f"[START] Running HitAnalysis on {path.name}...")
@@ -502,7 +564,7 @@ class AnalysisTab(QWidget):
             self._log_write("[WARN] A noise analysis is already running.")
             return
 
-        worker = NoiseAnalysisWorker(str(path))
+        worker = NoiseAnalysisWorker(str(path), self._spin_repeats.value())
         self._noise_worker = worker
         self._btn_noise.setEnabled(False)
         self._log_write(f"[START] Running NoiseAnalysis on {path.name}...")

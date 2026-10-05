@@ -177,6 +177,10 @@ class HitAnalysisWorker(QObject):
     analysed    = pyqtSignal(str, list, list)   # (root_path, plot_coord, active_chips)
     finished    = pyqtSignal()
 
+    # Avisar en el log si algún chip no tiene ningún hit en el fichero
+    # (en el modo standalone esto se repite en cada snapshot del poll).
+    warn_empty_chips = True
+
     def __init__(self, root_path: str):
         super().__init__()
         self._root_path = root_path
@@ -184,10 +188,18 @@ class HitAnalysisWorker(QObject):
     def run(self):
         try:
             from src.analysis.analysis_hit import HitAnalysis
+            from src.analysis.analysis_base import hits_per_chip, format_chips
             from src.core.exceptions import NAErrorNoHits
 
             root_manager = SystemConfig.create_root_manager(path=self._root_path)
             root_manager.load(self._root_path)
+            if self.warn_empty_chips:
+                empty = [c for c, n in hits_per_chip(root_manager.arrays).items() if n == 0]
+                if empty:
+                    self.log_message.emit(
+                        f"[WARN] No hits in {format_chips(empty)} in "
+                        f"{Path(self._root_path).name}: check that these chips are powered and enabled."
+                    )
             try:
                 analysis = HitAnalysis(root_manager)
                 plot_coord, active_chips = analysis.plot_coord, analysis.active_chips
