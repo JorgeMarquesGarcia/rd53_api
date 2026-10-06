@@ -7,13 +7,20 @@ from src.config.system_config import SystemConfig
 
 
 class CalibrationScan(ABC):
-    def __init__(self, hybrid_id: int = 0, rd53_id: int = 0, timeout: int = 600):
-        self.hybrid_id = hybrid_id
-        self.rd53_id = rd53_id
+    def __init__(self, chips: list[tuple[int, int]] | None = None, timeout: int = 600):
+        """
+        Args:
+            chips: lista de (hybrid_id, rd53_id) a calibrar. Si es None se usan
+                   los chips activos de SystemConfig (los marcados en APPLY CONFIG).
+            timeout: timeout global del proceso DAQ.
+        """
+        sys_config = SystemConfig()
+        self.chips = list(chips) if chips is not None else sys_config.get_active_hw_chips()
+        if not self.chips:
+            raise ValueError("No active chips configured for calibration.")
         self.timeout = timeout
         self.last_scan_end_pattern = None
 
-        sys_config = SystemConfig()
         self.ph2_acf_dir = str(sys_config.get_ph2_acf_dir())
         self.xml = sys_config.create_xml_manager()
         self.txt_dir = str(sys_config.get_txt_base_dir())
@@ -31,30 +38,31 @@ class CalibrationScan(ABC):
         if isinstance(setting, CalibrationSettings):
             self.xml.set_calibration_setting(setting, value)
         elif isinstance(setting, ChipSettings):
-            self.xml.set_chip_setting(self.hybrid_id, self.rd53_id, setting, value)
+            # ChipSettings → aplicar a todos los chips a calibrar
+            for hybrid_id, rd53_id in self.chips:
+                self.xml.set_chip_setting(hybrid_id, rd53_id, setting, value)
         elif isinstance(setting, FastCmdReg):
             self.xml.set_register_value(setting, value)
         else:
             raise ValueError(f"Unsupported setting type: {type(setting)}")
 
-    def _cal_setup_xml(self):
-        cal_map = CalibrationMap()
-        for key, value in cal_map.to_dict().items():
+    def _apply_map(self, settings: dict):
+        for key, value in settings.items():
             try:
                 self._apply_setting(key, value)
             except Exception as e:
-                self.xml.logger.warning(f"Failed to set calibration setting '{key}' to '{value}': {str(e)}")
+                self.xml.logger.warning(f"Failed to set '{key}' to '{value}': {str(e)}")
 
-        self.xml.set_chip_enable(self.hybrid_id, self.rd53_id, True)
+    def _cal_setup_xml(self):
+        self._apply_map(CalibrationMap().to_dict())
+
+        for hybrid_id, rd53_id in self.chips:
+            self.xml.set_chip_enable(hybrid_id, rd53_id, True)
         self.xml.save()
 
     def _setup_xml(self):
         self._cal_setup_xml()
-        for key, value in self.get_map().to_dict().items():
-            try:
-                self._apply_setting(key, value)
-            except Exception as e:
-                self.xml.logger.warning(f"Failed to set chip setting '{key}' to '{value}': {str(e)}")
+        self._apply_map(self.get_map().to_dict())
         self.xml.save()
 
     def run(self):

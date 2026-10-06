@@ -6,9 +6,10 @@ import numpy as np
 from src.config.root.root_manager import RootManager
 from src.analysis.analysis_base import BaseAnalysis
 from src.analysis.analysis_hit import TOT_THRESHOLD
-from src.chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS
+from src.chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS, TOT_MAX
 
-MIN_REPEATS = 10   # criterio B: píxel con >= N hits de ToT bajo en el fichero
+MIN_REPEATS = 10   # criterio B: píxel con >= N hits de ToT sospechoso en el fichero
+TOT_SATURATED = TOT_MAX   # los píxeles calientes suelen dar siempre el ToT máximo
 
 ChipKey = tuple[int, int]
 Pixel = tuple[int, int]
@@ -19,9 +20,11 @@ class NoiseAnalysis(BaseAnalysis):
 
     A. Múltiples hits: eventos con algún chip con más de 1 hit y TODOS los hits
        con ToT < tot_threshold. Todos los píxeles de esos eventos son ruidosos.
-    B. Repeticiones: píxeles que se disparan min_repeats veces o más con
-       ToT < tot_threshold en todo el fichero. Cubre el ruido de píxeles que
-       se disparan solos (1 hit por evento), que A no puede ver.
+    B. Repeticiones: píxeles que se disparan min_repeats veces o más con ToT
+       sospechoso en todo el fichero: ToT < tot_threshold o saturado
+       (TOT_SATURATED). Cubre el ruido de píxeles que se disparan solos (1 hit
+       por evento), que A no puede ver, incluidos los píxeles calientes que
+       siempre dan el ToT máximo.
 
     tot_threshold es el mismo umbral que usa HitAnalysis para los eventos buenos.
 
@@ -29,7 +32,7 @@ class NoiseAnalysis(BaseAnalysis):
         noisy_events:       eventos ruidosos del criterio A (awkward).
         multi_hit_pixels:   {(hybrid, lane): {(row, col), ...}} del criterio A.
         repeated_pixels:    {(hybrid, lane): {(row, col), ...}} del criterio B.
-        noisy_pixel_counts: {(hybrid, lane): {(row, col): nº de hits con ToT < umbral}} (A ∪ B).
+        noisy_pixel_counts: {(hybrid, lane): {(row, col): nº de hits con ToT sospechoso}} (A ∪ B).
         noisy_pixels:       {(hybrid, lane): [(row, col), ...]} (A ∪ B, sin repetir).
         stats:              n_noisy_pixels, total_pixels, noise_percentage.
     """
@@ -42,9 +45,9 @@ class NoiseAnalysis(BaseAnalysis):
         self.min_repeats = min_repeats
 
         self.logger.info("NoiseAnalysis: A) some chip with >1 hit and all hits with ToT < %d; "
-                         "B) pixel with >= %d hits with ToT < %d",
-                         self.tot_threshold, self.min_repeats, self.tot_threshold)
-        self._all_counts, self._low_tot_counts = self._count_hits_per_pixel()
+                         "B) pixel with >= %d hits with ToT < %d or ToT = %d",
+                         self.tot_threshold, self.min_repeats, self.tot_threshold, TOT_SATURATED)
+        self._all_counts, self._suspect_tot_counts = self._count_hits_per_pixel()
         self._log_frequent_pixels()
 
         # Criterio A: múltiples hits de ToT bajo en el mismo evento
@@ -55,7 +58,8 @@ class NoiseAnalysis(BaseAnalysis):
         # Criterio B: píxeles que se repiten
         self.repeated_pixels = self._repeated_pixels()
         self._log_pixels_per_chip(
-            f"Criterion B (>= {self.min_repeats} hits with ToT < {self.tot_threshold}) · noisy pixels",
+            f"Criterion B (>= {self.min_repeats} hits with ToT < {self.tot_threshold} "
+            f"or ToT = {TOT_SATURATED}) · noisy pixels",
             self.repeated_pixels)
 
         self.noisy_pixel_counts = self._merge_criteria()
@@ -95,7 +99,7 @@ class NoiseAnalysis(BaseAnalysis):
     # Criterio B: repeticiones
     # ------------------------------------------------------------------
     def _count_hits_per_pixel(self) -> tuple[Counter, Counter]:
-        """Cuenta hits por (chip, píxel) en todo el fichero: (todos, solo ToT < umbral)."""
+        """Cuenta hits por (chip, píxel) en todo el fichero: (todos, solo ToT sospechoso)."""
         data = self.clean_data
         if len(data) == 0:
             return Counter(), Counter()
@@ -108,28 +112,28 @@ class NoiseAnalysis(BaseAnalysis):
         tots = ak.to_numpy(ak.flatten(data.RD53_hit_tot)).tolist()
 
         all_counts: Counter = Counter()
-        low_tot: Counter = Counter()
+        suspect_tot: Counter = Counter()
         for i, r, c, t in zip(chip_idx, rows, cols, tots):
             key = (self.active_chips[i], (int(r), int(c)))
             all_counts[key] += 1
-            if t < self.tot_threshold:
-                low_tot[key] += 1
-        return all_counts, low_tot
+            if t < self.tot_threshold or t == TOT_SATURATED:
+                suspect_tot[key] += 1
+        return all_counts, suspect_tot
 
     def _repeated_pixels(self) -> dict[ChipKey, set[Pixel]]:
         pixels: dict[ChipKey, set[Pixel]] = {}
-        for (chip, pixel), n in self._low_tot_counts.items():
+        for (chip, pixel), n in self._suspect_tot_counts.items():
             if n >= self.min_repeats:
                 pixels.setdefault(chip, set()).add(pixel)
         return pixels
 
     def _merge_criteria(self) -> dict[ChipKey, dict[Pixel, int]]:
-        """A ∪ B; el valor de cada píxel es su nº de hits con ToT < umbral."""
+        """A ∪ B; el valor de cada píxel es su nº de hits con ToT sospechoso."""
         merged: dict[ChipKey, dict[Pixel, int]] = {}
         for source in (self.multi_hit_pixels, self.repeated_pixels):
             for chip, pixels in source.items():
                 for pixel in pixels:
-                    merged.setdefault(chip, {})[pixel] = max(1, self._low_tot_counts[(chip, pixel)])
+                    merged.setdefault(chip, {})[pixel] = max(1, self._suspect_tot_counts[(chip, pixel)])
         return merged
 
     # ------------------------------------------------------------------
@@ -144,7 +148,8 @@ class NoiseAnalysis(BaseAnalysis):
                 continue
             h, c = chip
             self.logger.info("Most frequent pixels H%d·%d (all hits): %s", h, c, ", ".join(
-                f"({r},{col})×{n} [ToT<{self.tot_threshold}: {self._low_tot_counts[(chip, (r, col))]}]"
+                f"({r},{col})×{n} [ToT<{self.tot_threshold} or ={TOT_SATURATED}: "
+                f"{self._suspect_tot_counts[(chip, (r, col))]}]"
                 for (r, col), n in chip_counts))
 
     def _log_pixels_per_chip(self, label: str, pixels_by_chip) -> None:

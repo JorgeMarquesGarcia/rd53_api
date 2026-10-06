@@ -170,8 +170,9 @@ class Raw2RootWorker(QObject):
 
 class HitAnalysisWorker(QObject):
     """
-    Carga un .root y ejecuta HitAnalysis. Solo calcula: el dibujado lo hace
-    la GUI con los datos emitidos en analysed.
+    Carga un .root y ejecuta NoiseAnalysis y después HitAnalysis, que descarta
+    los píxeles ruidosos. Solo calcula: el dibujado lo hace la GUI con los
+    datos emitidos en analysed.
     """
     log_message = pyqtSignal(str)
     analysed    = pyqtSignal(str, list, list)   # (root_path, plot_coord, active_chips)
@@ -181,13 +182,15 @@ class HitAnalysisWorker(QObject):
     # (en el modo standalone esto se repite en cada snapshot del poll).
     warn_empty_chips = True
 
-    def __init__(self, root_path: str):
+    def __init__(self, root_path: str, min_repeats: int | None = None):
         super().__init__()
         self._root_path = root_path
+        self._min_repeats = min_repeats   # None = el valor por defecto de NoiseAnalysis
 
     def run(self):
         try:
             from src.analysis.analysis_hit import HitAnalysis
+            from src.analysis.analysis_noise import NoiseAnalysis, MIN_REPEATS
             from src.analysis.analysis_base import hits_per_chip, format_chips
             from src.core.exceptions import NAErrorNoHits
 
@@ -201,7 +204,8 @@ class HitAnalysisWorker(QObject):
                         f"{Path(self._root_path).name}: check that these chips are powered and enabled."
                     )
             try:
-                analysis = HitAnalysis(root_manager)
+                noise = NoiseAnalysis(root_manager, min_repeats=self._min_repeats or MIN_REPEATS)
+                analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
                 plot_coord, active_chips = analysis.plot_coord, analysis.active_chips
             except NAErrorNoHits:
                 plot_coord, active_chips = [], []
@@ -1193,10 +1197,12 @@ class AcquisitionTab(QWidget):
         self._log_write("[INFO] Running HitAnalysis on latest ROOT file...")
         try:
             from src.analysis.analysis_hit import HitAnalysis
+            from src.analysis.analysis_noise import NoiseAnalysis
 
             root_manager = SystemConfig.create_root_manager()
             root_manager.load()
-            self._last_hit_analysis = HitAnalysis(root_manager)
+            noise = NoiseAnalysis(root_manager)
+            self._last_hit_analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
             n = len(self._last_hit_analysis.plot_coord)
             self._log_write(f"[OK]   HitAnalysis complete: {n} tracks reconstructed.")
 

@@ -64,8 +64,10 @@ class AnalysisRunner:
     def _run_acquisition_analysis(self) -> None:
         """Run both hit and noise analysis (acquisition mode)."""
         self.logger.info("Running acquisition analysis (hits + noise)")
-        self.hit_analysis = HitAnalysis(self.root_manager)
+        # Primero el ruido: sus píxeles se descartan en el análisis de hits
         self.noise_analysis = NoiseAnalysis(self.root_manager)
+        self.hit_analysis = HitAnalysis(self.root_manager,
+                                        noisy_pixels=self.noise_analysis.noisy_pixels)
     
     @property
     def n_noisy_pixels(self) -> int:

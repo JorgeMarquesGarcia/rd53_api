@@ -11,6 +11,6 @@ print(CalibrationConfig.get_xml_path())
 if CalibrationConfig.is_configured():
     print("Conffigurationo ready")
 
-scan = SCurveScan(hybrid_id=0, rd53_id=0, timeout=1000)
+scan = SCurveScan(chips=[(0, 0)], timeout=1000)
 
 print(scan.run())

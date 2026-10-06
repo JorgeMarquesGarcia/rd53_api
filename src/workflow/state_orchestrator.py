@@ -158,8 +158,11 @@ class StateOrchestrator:
         root_manager = SystemConfig.create_root_manager()
         root_manager.load()
 
+        # Primero el ruido: sus píxeles se descartan en el análisis de hits
+        noise = NoiseAnalysis(root_manager)
+
         if self._last_operational_state == SystemState.ACQUISITION:
-            self.last_hit_analysis = HitAnalysis(root_manager)
+            self.last_hit_analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
             self.logger.info(
                 "HitAnalysis complete: %d tracks reconstructed",
                 len(self.last_hit_analysis.plot_coord),
@@ -167,7 +170,6 @@ class StateOrchestrator:
         else:
             self.last_hit_analysis = None
 
-        noise = NoiseAnalysis(root_manager)
         n_noisy = noise.stats["n_noisy_pixels"]
         SystemConfig.set_noisy_pixels(n_noisy)
 

@@ -502,7 +502,7 @@ class AnalysisTab(QWidget):
             self._log_write("[WARN] A hit analysis is already running.")
             return
 
-        worker = _HitAnalysisWorkerWithLogs(str(path))
+        worker = _HitAnalysisWorkerWithLogs(str(path), self._spin_repeats.value())
         self._hit_worker = worker
         self._btn_hits.setEnabled(False)
         self._log_write(f"[START] Running HitAnalysis on {path.name}...")

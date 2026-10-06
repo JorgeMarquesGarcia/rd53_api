@@ -33,6 +33,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 SENSOR_ROWS = 192   # filas por chip RD53A
 SENSOR_COLS = 400   # columnas por chip RD53A
+TOT_MAX = 14        # ToT máximo del RD53A (4 bits; 15 significa sin hit)
 
 # ---------------------------------------------------------------------------
 # Colocación de chips en el plano XY

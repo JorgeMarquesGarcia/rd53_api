@@ -17,6 +17,7 @@ FILTRADO DE DATOS:
 
 COLUMNAS MANTENIDAS EN LOS DATOS FILTRADOS:
 - event: identificador del evento
+- FW_bx_counter: BX del trigger; entradas consecutivas forman una ventana de trigger
 - RD53_frame_event_nhits: número de hits por plano [n_hits_plano0, n_hits_plano1, ...]
 - RD53_hit_row: fila del pixel para cada hit
 - RD53_hit_col: columna del pixel para cada hit
@@ -106,7 +107,8 @@ class BaseAnalysis(ABC):
 		"""Filtra los datos para mantener solo las columnas necesarias para el análisis.
 		
 		Extrae los chips activos (una sola vez) y los guarda en self.active_chips.
-		Retorna datos con: event, RD53_frame_event_nhits, RD53_hit_row, RD53_hit_col, RD53_hit_tot
+		Retorna datos con: event, FW_bx_counter, RD53_frame_event_nhits, RD53_hit_row,
+		RD53_hit_col, RD53_hit_tot
 		"""
 		# Extraer los chips únicos (hybrid_id, chip_lane)
 		self.hybrid_ids = data.FW_frame_event_hybrid_id[0]
@@ -115,6 +117,7 @@ class BaseAnalysis(ABC):
 		# Seleccionar solo las columnas necesarias
 		required_columns = [
 			'event',
+			'FW_bx_counter',
 			'FW_frame_event_hybrid_id',
 			'FW_frame_event_chip_lane',
 			'RD53_frame_event_nhits',

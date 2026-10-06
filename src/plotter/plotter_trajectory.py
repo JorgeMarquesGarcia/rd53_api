@@ -8,7 +8,8 @@ from typing import List, Tuple
 
 from src.chip.detector_geometry import z_position
 from src.plotter.detector_planes import (
-    CHIP_COLORS, Z_START, Z_END, draw_detector_planes, setup_detector_axes,
+    TRACK_COLOR, Z_START, Z_END, add_tot_colorbar, draw_detector_planes,
+    setup_detector_axes, tot_color,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,12 +22,12 @@ class CoincidencePlotter:
         self.plot_data = plot_coord_data
         self.active_chips = active_chips or []
         self.track_count = 0
-        self.colors = plt.cm.rainbow(np.linspace(0, 1, 20))
-        self.chip_colors = CHIP_COLORS
 
         plt.ion()
         self.fig = plt.figure(figsize=(12, 9))
+        self.fig.subplots_adjust(right=0.9)
         self.ax = self.fig.add_subplot(111, projection='3d')
+        add_tot_colorbar(self.fig, self.fig.add_axes([0.91, 0.25, 0.015, 0.5]))
 
         draw_detector_planes(self.ax, self.active_chips)
         self._setup_axes()
@@ -34,7 +35,7 @@ class CoincidencePlotter:
         plt.show(block=False)
 
     def _setup_axes(self):
-        setup_detector_axes(self.ax)
+        setup_detector_axes(self.ax, self.active_chips)
         self.ax.set_title('Trayectorias de partículas', fontsize=14, weight='bold')
 
     def plot_single_event(self, event_index: int):
@@ -64,13 +65,11 @@ class CoincidencePlotter:
     def _plot_trajectory(self, event_dict: dict, event_label: str = None):
         x_coords, y_coords, z_coords, colors_list = [], [], [], []
 
-        for (hybrid_id, chip_lane), (row, col) in event_dict.items():
+        for (hybrid_id, chip_lane), (row, col, tot) in event_dict.items():
             x_coords.append(col)
             y_coords.append(row)
             z_coords.append(z_position(hybrid_id))
-            colors_list.append(
-                self.chip_colors.get((hybrid_id, chip_lane), (0.5, 0.5, 0.5))
-            )
+            colors_list.append(tot_color(tot))
 
         x = np.array(x_coords, dtype=float)
         y = np.array(y_coords, dtype=float)
@@ -83,23 +82,19 @@ class CoincidencePlotter:
             print(f"❌ Error ajustando trayectoria: {e}")
             return
 
-        z_ext = np.linspace(Z_END, Z_START, 100)
+        z_ext = np.linspace(Z_START, Z_END, 100)
         x_ext = x_poly(z_ext)
         y_ext = y_poly(z_ext)
 
-        track_color = self.colors[self.track_count % len(self.colors)]
         label = event_label or f'Track #{self.track_count + 1}'
 
         self.ax.plot(x_ext, y_ext, z_ext,
-                     color=track_color, linewidth=2, alpha=0.7, label=label)
+                     color=TRACK_COLOR, linewidth=2, alpha=0.7, label=label)
         self.ax.scatter(x, y, z,
                         c=colors_list, s=100, alpha=0.95,
                         edgecolors='black', linewidth=1.5)
 
         self.track_count += 1
-
-        if self.track_count <= 10:
-            self.ax.legend(loc='upper right', fontsize=9)
 
         self.ax.set_title(f'Trayectorias — {self.track_count} tracks',
                           fontsize=14, weight='bold')
