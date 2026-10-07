@@ -29,7 +29,7 @@ LIVE_REFRESH_MS: int       = 60_000          # ciclo de visualización: cada 60 
 DAQ_POLL_INTERVAL: float   = 120.0            # segundos entre polls del .raw (rotación)
 DAQ_STOP_CHECK: float      = 1.0              # durante el poll, cada cuánto se atiende STOP/ABORT
 DAQ_CLOSE_TIMEOUT: float   = 10.0             # espera a que el DAQ cierre el .raw tras el Enter
-DAQ_MAX_RETRIES: int       = 5                # reintentos en los relanzamientos automáticos (no en el START del usuario)
+DAQ_MAX_RETRIES: int       = 5                # reintentos automáticos (no si falla el arranque del START del usuario)
 DAQ_RETRY_DELAY: float     = 5.0              # segundos de espera entre reintentos
 
 # Vthreshold_LIN: rango válido del spinbox y valor centinela "sin valor".
@@ -229,10 +229,11 @@ class StandaloneAcquisitionWorker(QObject):
 
     Ciclo de vida:
       1. Lanza CMSITminiDAQ -f <xml> -c physics -t -1 en un thread interno.
-         Si falla el lanzamiento del START del usuario (ciclo 1), se detiene
-         y el usuario reintenta a mano. En los relanzamientos automáticos
-         (ciclos ≥ 2, tras una rotación) reintenta hasta DAQ_MAX_RETRIES veces
-         (esperando DAQ_RETRY_DELAY s); agotados los reintentos, se detiene.
+         Si el START del usuario falla antes de empezar el run, se detiene
+         y el usuario reintenta a mano. Si el DAQ se cae a mitad de toma, o
+         falla un relanzamiento automático tras una rotación, reintenta hasta
+         DAQ_MAX_RETRIES veces (esperando DAQ_RETRY_DELAY s); agotados los
+         reintentos, se detiene.
          Cuando el DAQ anuncia el .raw que escribe, emite raw_file_started(raw_path).
       2. Hace polling del .raw cada DAQ_POLL_INTERVAL segundos.
          Emite debug por señal en cada poll.
@@ -328,45 +329,53 @@ class StandaloneAcquisitionWorker(QObject):
     def _run_one_cycle(self) -> Path | None:
         """
         Lanza el DAQ y espera a que el .raw supere el límite, llegue STOP
-        o llegue ABORT. Solo reintenta en los relanzamientos automáticos
-        (ciclo ≥ 2): si falla el START del usuario, reintenta él a mano.
+        o llegue ABORT. Si el DAQ falla, reintenta hasta DAQ_MAX_RETRIES
+        veces, salvo que sea el START del usuario fallando antes de empezar
+        el run: entonces reintenta él a mano, que es más rápido.
 
         Returns el .raw cerrado que hay que convertir (rotación o STOP),
         o None si no hay nada que convertir (ABORT o fallo tras agotar reintentos).
         """
-        retries      = DAQ_MAX_RETRIES if self._cycle > 1 else 0
-        max_attempts = retries + 1
-        for attempt in range(1, max_attempts + 1):
-            if self._exit_requested():
-                return None
-
-            raw_path = self._launch_daq(attempt, max_attempts)
+        attempt = 0
+        while not self._exit_requested():
+            attempt += 1
+            raw_path, run_started = self._launch_daq(attempt)
             if raw_path is not None or self._exit_requested():
                 return raw_path
 
-            if attempt < max_attempts:
-                self._dbg(f"DAQ failed — retrying in {DAQ_RETRY_DELAY:.0f} s "
-                          f"(retry {attempt}/{retries})")
-                # Espera interrumpible: STOP/ABORT la cortan al momento
-                self._exit_event.wait(timeout=DAQ_RETRY_DELAY)
+            if self._cycle == 1 and attempt == 1 and not run_started:
+                self._dbg("DAQ failed on user start — no automatic retry, press START again.")
+                return None
 
-        if retries:
-            self._dbg(f"DAQ failed on all {max_attempts} attempts — giving up.")
-        else:
-            self._dbg("DAQ failed on user start — no automatic retry, press START again.")
+            if attempt > DAQ_MAX_RETRIES:
+                self._dbg(f"DAQ failed after {DAQ_MAX_RETRIES} retries — giving up.")
+                return None
+
+            self._dbg(f"DAQ failed — retrying in {DAQ_RETRY_DELAY:.0f} s "
+                      f"(retry {attempt}/{DAQ_MAX_RETRIES})")
+            # Espera interrumpible: STOP/ABORT la cortan al momento
+            self._exit_event.wait(timeout=DAQ_RETRY_DELAY)
+
         return None
 
-    def _launch_daq(self, attempt: int, max_attempts: int) -> Path | None:
+    def _launch_daq(self, attempt: int) -> tuple[Path | None, bool]:
         """
         Un intento: lanza el DAQ con -t -1 y hace polling del .raw.
 
-        Returns el .raw cerrado (rotación o STOP), o None si hubo ABORT
-        o el DAQ falló / terminó solo (el llamador decide si reintenta).
+        Returns (raw_path, run_started):
+          raw_path    — .raw cerrado (rotación o STOP), o None si hubo ABORT
+                        o el DAQ falló / terminó solo (el llamador decide si reintenta).
+          run_started — si el DAQ llegó a empezar el run. CMSITminiDAQ solo
+                        anuncia el .raw ("Saving binary data into:") después de
+                        configurar el hardware, así que un fallo de arranque
+                        (lanes, reloj…) deja run_started=False y una caída a
+                        mitad de toma, True.
         """
         from src.acquisition.scans.physics import PhysicsScan
 
-        self._dbg(f"DAQ launch attempt {attempt}/{max_attempts}")
+        self._dbg(f"DAQ launch attempt {attempt}")
 
+        scan = None
         try:
             scan = PhysicsScan(
                 chips=self._chips,
@@ -409,7 +418,7 @@ class StandaloneAcquisitionWorker(QObject):
             if self._abort_flag:
                 scan.abort()
                 daq_done.wait(timeout=10)
-                return None
+                return None, scan.raw_path is not None
 
             if self._stop_flag:
                 # end_scan() ya envió el Enter: esperar a que el DAQ cierre el .raw
@@ -420,7 +429,7 @@ class StandaloneAcquisitionWorker(QObject):
                 last_raw = self._find_latest_raw(results_dir)
                 if last_raw is not None:
                     self._dbg(f"Stopped — last .raw: {last_raw.name}")
-                return last_raw
+                return last_raw, scan.raw_path is not None
 
             if raw_path is not None:
                 # .raw llegó al límite → detener el DAQ de este ciclo
@@ -430,7 +439,7 @@ class StandaloneAcquisitionWorker(QObject):
                 daq_done.wait(timeout=DAQ_CLOSE_TIMEOUT)
 
                 self._dbg(f"Cycle {self._cycle} complete | raw={raw_path.name}")
-                return raw_path
+                return raw_path, True
 
             # Si daq_done se activó sin que raw_path sea válido → DAQ terminó solo
             if daq_done.is_set() and daq_error[0] is not None:
@@ -443,7 +452,7 @@ class StandaloneAcquisitionWorker(QObject):
             self._dbg(f"Exception in cycle attempt {attempt}: {e}")
             self.log_message.emit(f"[STANDALONE ERROR] {e}")
 
-        return None
+        return None, scan is not None and scan.raw_path is not None
 
     # ------------------------------------------------------------------
     # Polling del .raw
