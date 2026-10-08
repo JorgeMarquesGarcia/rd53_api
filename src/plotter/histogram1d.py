@@ -2,7 +2,6 @@ from __future__ import annotations
 import numpy as np
 from matplotlib.axes import Axes
 import logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.plotter.plotter_base import PlotterBase
@@ -41,6 +40,22 @@ _PLOT_CONFIG: dict[str, dict] = {
         "title": "Threshold Equalization",
         "ylabel": "Entries",
     },
+    "SlopeLowQ1D": {
+        "color": "#3F51B5",
+        "title": "Gain Slope Distribution",
+        "ylabel": "Entries",
+        "fmt":   ".4f",   # pendiente ~1e-2 ToT/ΔVCal
+    },
+    "InterceptLowQ1D": {
+        "color": "#009688",
+        "title": "Gain Intercept Distribution",
+        "ylabel": "Entries",
+    },
+    "Chi2DoF1D": {
+        "color": "#795548",
+        "title": "Gain Fit χ²/DoF",
+        "ylabel": "Entries",
+    },
 }
 
 _DEFAULT_CONFIG = {
@@ -62,7 +77,7 @@ class Histogram1DPlotter(PlotterBase):
         logger.info(f"Iniciando extracción de datos para {self.plot_key} desde {self.canvas_path}")
         try:
             f, canvas = self._open_canvas()
-            logger.debug(f"Canvas abierto exitosamente")
+            logger.debug("Canvas abierto exitosamente")
             
             h = self._get_primitive(canvas, "TH1")
             if h is None:
@@ -70,7 +85,7 @@ class Histogram1DPlotter(PlotterBase):
                 f.Close()
                 raise ValueError(f"No se encontró TH1 en el canvas '{self.canvas_path}'")
             
-            logger.info(f"Histograma TH1 encontrado. Convirtiendo a diccionario...")
+            logger.info("Histograma TH1 encontrado. Convirtiendo a diccionario...")
             data = self._th1_to_dict(h)
             f.Close()
 
@@ -121,13 +136,14 @@ class Histogram1DPlotter(PlotterBase):
             )
 
             # Línea de media
+            fmt = cfg.get("fmt", ".2f")
             if data["mean"] != 0.0:
                 ax.axvline(
                     data["mean"],
                     color="black",
                     linewidth=1.2,
                     linestyle="--",
-                    label=f"μ = {data['mean']:.2f}",
+                    label=f"μ = {data['mean']:{fmt}}",
                 )
                 # Banda ± sigma
                 ax.axvspan(
@@ -135,7 +151,7 @@ class Histogram1DPlotter(PlotterBase):
                     data["mean"] + data["sigma"],
                     alpha=0.10,
                     color="black",
-                    label=f"σ = {data['sigma']:.2f}",
+                    label=f"σ = {data['sigma']:{fmt}}",
                 )
                 logger.debug(f"Media y sigma dibujadas: μ={data['mean']:.4f}, σ={data['sigma']:.4f}")
                 ax.legend(fontsize=8, framealpha=0.6)
@@ -175,3 +191,12 @@ class TDAC1DPlotter(Histogram1DPlotter):
 
 class ThrEqualizationPlotter(Histogram1DPlotter):
     plot_key = "ThrEqualization"
+
+class SlopeLowQ1DPlotter(Histogram1DPlotter):
+    plot_key = "SlopeLowQ1D"
+
+class InterceptLowQ1DPlotter(Histogram1DPlotter):
+    plot_key = "InterceptLowQ1D"
+
+class Chi2DoF1DPlotter(Histogram1DPlotter):
+    plot_key = "Chi2DoF1D"

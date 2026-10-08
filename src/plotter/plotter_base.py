@@ -1,10 +1,8 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 import numpy as np
-import ctypes
 
 import logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 import ROOT
@@ -30,6 +28,9 @@ ANALYSIS_PLOTS: dict[str, list[str]] = {
     "noise":      ["PixelAlive", "ToT2D", "ToT1D"],
     "pixelalive": ["PixelAlive"],
     "threqu":     ["ThrEqualization", "TDAC1D", "TDAC2D", "Masked2D"],
+    "gain":       ["Gain", "SlopeLowQ1D", "InterceptLowQ1D", "Chi2DoF1D"],
+    # El .root de GainOptimization incluye el gain scan final con el KRUM elegido
+    "gainopt":    ["KrumCurr", "Gain", "SlopeLowQ1D", "InterceptLowQ1D"],
 }
 
 
@@ -71,14 +72,14 @@ class PlotterBase(ABC):
     # ------------------------------------------------------------------
     def get_canvas(self) -> FigureCanvas:
         """Extrae datos del fichero ROOT y devuelve el widget Qt listo para usar."""
-        self.logger.info(f"Iniciando get_canvas()")
+        self.logger.info("Iniciando get_canvas()")
         try:
             self._data = self._extract()
-            self.logger.info(f"Datos extraídos exitosamente")
+            self.logger.info("Datos extraídos exitosamente")
             self._draw(self._ax, self._data)
-            self.logger.info(f"Dibujado completado")
+            self.logger.info("Dibujado completado")
             self._canvas.draw()
-            self.logger.info(f"Canvas renderizado")
+            self.logger.info("Canvas renderizado")
             return self._canvas
         except Exception as e:
             self.logger.exception(f"Error en get_canvas(): {e}")
@@ -86,7 +87,7 @@ class PlotterBase(ABC):
 
     def refresh(self, root_path: str | None = None, canvas_path: str | None = None) -> None:
         """Actualiza el plot con un nuevo fichero o canvas (reutiliza el widget Qt)."""
-        self.logger.info(f"Iniciando refresh()")
+        self.logger.info("Iniciando refresh()")
         try:
             if root_path:
                 self.logger.debug(f"Actualizando root_path: {root_path}")
@@ -95,13 +96,13 @@ class PlotterBase(ABC):
                 self.logger.debug(f"Actualizando canvas_path: {canvas_path}")
                 self.canvas_path = canvas_path
             self._ax.cla()
-            self.logger.debug(f"Axes limpiados")
+            self.logger.debug("Axes limpiados")
             self._data = self._extract()
-            self.logger.info(f"Datos extraídos en refresh()")
+            self.logger.info("Datos extraídos en refresh()")
             self._draw(self._ax, self._data)
-            self.logger.info(f"Dibujado completado en refresh()")
+            self.logger.info("Dibujado completado en refresh()")
             self._canvas.draw()
-            self.logger.info(f"Refresh completado exitosamente")
+            self.logger.info("Refresh completado exitosamente")
         except Exception as e:
             self.logger.exception(f"Error en refresh(): {e}")
             raise
@@ -143,7 +144,7 @@ class PlotterBase(ABC):
                     f"No se encontró un TCanvas en '{self.canvas_path}' "
                     f"dentro de '{self.root_path}'"
                 )
-            self.logger.info(f"Canvas encontrado exitosamente")
+            self.logger.info("Canvas encontrado exitosamente")
             return f, canvas
         except Exception as e:
             self.logger.exception(f"Error al abrir canvas: {e}")
@@ -176,13 +177,67 @@ class PlotterBase(ABC):
         return result
 
     @staticmethod
+    def _th2_flat_buffer(h) -> np.ndarray | None:
+        """Buffer interno del TH2 (con under/overflow) como array plano, o None.
+
+        Primero el puntero de GetArray() (rápido); si esta versión de PyROOT no
+        lo permite, el protocolo de secuencia de numpy.
+        """
+        size = h.GetSize()
+        try:
+            buf = h.GetArray()
+            buf.reshape((size,))
+            flat = np.array(buf, dtype=np.float64)
+            if flat.size == size:
+                return flat
+        except Exception:
+            pass
+        try:
+            return np.asarray(h, dtype=np.float64).ravel()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _th2_matches(h, values: np.ndarray) -> bool:
+        """Comprueba la suma total y, contra GetBinContent, la fila y la columna completas del máximo."""
+        if not np.isclose(values.sum(), h.Integral(), rtol=1e-6, atol=1e-9):
+            return False
+        ix, iy = np.unravel_index(int(np.argmax(values)), values.shape)
+        nx, ny = values.shape
+        col_ok = all(np.isclose(values[ix, j], h.GetBinContent(int(ix) + 1, j + 1)) for j in range(ny))
+        row_ok = all(np.isclose(values[i, iy], h.GetBinContent(i + 1, int(iy) + 1)) for i in range(nx))
+        return col_ok and row_ok
+
+    @staticmethod
+    def _th2_values(h) -> np.ndarray:
+        """Contenido de un TH2 como array (nx, ny) indexado [bin_x, bin_y], sin under/overflow.
+
+        ROOT guarda los bins con x variando más rápido (bin global =
+        binx + (nx + 2) * biny). El resultado se verifica contra GetBinContent
+        y, si no coincide (otra versión de PyROOT), se lee bin a bin.
+        """
+        nx, ny = h.GetNbinsX(), h.GetNbinsY()
+        values = None
+        flat = PlotterBase._th2_flat_buffer(h)
+        if flat is not None and flat.size == (nx + 2) * (ny + 2):
+            values = flat.reshape(ny + 2, nx + 2)[1:-1, 1:-1].T
+        elif flat is not None and flat.size == nx * ny:
+            values = flat.reshape(nx, ny)   # interfaz UHI: values() sin flow, [x, y]
+
+        if values is None or not PlotterBase._th2_matches(h, values):
+            logger.debug("TH2 '%s': lectura bin a bin", h.GetName())
+            values = np.array([[h.GetBinContent(ix, iy) for iy in range(1, ny + 1)]
+                               for ix in range(1, nx + 1)], dtype=np.float64)
+        return np.ascontiguousarray(values)
+
+    @staticmethod
     def _th2_to_dict(h) -> dict:
         """Convierte un TH2x de ROOT a numpy arrays."""
         logger.debug(f"Convirtiendo TH2 '{h.GetTitle()}' a diccionario")
         nx = h.GetNbinsX()
         ny = h.GetNbinsY()
         logger.debug(f"TH2 tiene {nx}x{ny} bins")
-        values = np.array(h, dtype=np.float64).reshape(nx+2, ny+2)[1:-1, 1:-1]
+        values = PlotterBase._th2_values(h)
         if values.sum() == 0:
             raise ValueError(f"Histograma '{h.GetName()}' está vacío (0 entradas)")
         return {
@@ -219,7 +274,7 @@ class PlotterBase(ABC):
         """Devuelve todos los plotters necesarios para un tipo de análisis.
 
         Args:
-            analysis:  'scurve' | 'noise' | 'pixelalive' | 'threqu'
+            analysis:  'scurve' | 'noise' | 'pixelalive' | 'threqu' | 'gain' | 'gainopt'
             root_path: ruta al fichero .root
             chip_dir:  ruta hasta el directorio del chip dentro del .root,
                        p.ej. 'Detector/Board_0/OpticalGroup_0/Hybrid_2/Chip_0'
@@ -238,5 +293,5 @@ class PlotterBase(ABC):
             )
         logger.info(f"Se van a crear {len(keys)} plotters: {keys}")
         plotters = [PlotterBase.for_key(k, root_path, chip_dir) for k in keys]
-        logger.info(f"Todos los plotters creados exitosamente")
+        logger.info("Todos los plotters creados exitosamente")
         return plotters

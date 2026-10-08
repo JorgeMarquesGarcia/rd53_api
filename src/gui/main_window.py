@@ -3,19 +3,18 @@ main_window.py - Ventana principal de la GUI RD53A.
 """
 from __future__ import annotations
 import logging
-from PyQt5.QtWidgets import (
-    QMainWindow, QTabWidget, QStatusBar,
-    QLabel, QWidget, QHBoxLayout,
-)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtWidgets import QMainWindow, QTabWidget, QStatusBar, QLabel
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QFont
 
 from src.config.system_config import SystemConfig
 from src.workflow.system_state import SystemState
 from src.gui.tabs.config_tab       import ConfigTab
 from src.gui.tabs.calibration_tab  import CalibrationTab
 from src.gui.tabs.acquisition_tab  import AcquisitionTab
-from src.gui.tabs.analysis_tab import AnalysisTab
+from src.gui.tabs.analysis_tab     import AnalysisTab
+
+STATE_POLL_MS = 2000   # refresco del indicador de estado de la barra inferior
 
 # ---------------------------------------------------------------------------
 # Paleta de colores — estilo osciloscopio / industrial oscuro
@@ -237,6 +236,12 @@ class MainWindow(QMainWindow):
         self.calibration_tab.plots_loading.connect(self._on_plots_loading)
         self.analysis_tab.plots_loading.connect(self._on_plots_loading)
 
+        # ConfigTab auto-aplica la configuración guardada al construirse, antes
+        # de que su señal config_applied esté conectada: se propaga aquí al
+        # resto de pestañas y a la barra de estado.
+        if SystemConfig.is_configured():
+            self._on_config_applied()
+
         self.logger.info("MainWindow inicializado.")
 
     # ------------------------------------------------------------------
@@ -258,7 +263,6 @@ class MainWindow(QMainWindow):
 
         # Conectar señal de configuración aplicada
         self.config_tab.config_applied.connect(self._on_config_applied)
-        self.analysis_tab.on_config_applied()
 
     def _build_status_bar(self):
         self.status_bar = QStatusBar()
@@ -282,10 +286,10 @@ class MainWindow(QMainWindow):
         self._update_state_indicator()
 
     def _start_state_polling(self):
-        """Refresca el indicador de estado cada 500ms."""
+        """Refresca el indicador de estado cada STATE_POLL_MS."""
         self._state_timer = QTimer(self)
         self._state_timer.timeout.connect(self._update_state_indicator)
-        self._state_timer.start(2000)
+        self._state_timer.start(STATE_POLL_MS)
 
     # ------------------------------------------------------------------
     # Actualización de estado
@@ -310,4 +314,4 @@ class MainWindow(QMainWindow):
         if loading:
             self._state_timer.stop()
         else:
-            self._state_timer.start(2000)
+            self._state_timer.start(STATE_POLL_MS)

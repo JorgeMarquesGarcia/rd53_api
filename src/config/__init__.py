@@ -1,6 +1,7 @@
 from .base_config_manager import BaseConfigManager
 from .calibration_config import CalibrationConfig
 from .acquisition_config import AcquisitionConfig
+from .analysis_config import AnalysisConfig
 from .system_config import SystemConfig
 
 __all__ = [

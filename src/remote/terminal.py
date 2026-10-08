@@ -3,16 +3,29 @@ import subprocess
 import logging
 import re
 import signal
-import os
 from typing import Callable
 from src.core.exceptions import TerminalTimeOutError, TerminalCommandError
 
 logger = logging.getLogger(__name__)
-logger.propagate = True
 
 TERMINAL_ERROR_PATTERNS = {
     r'===== Aborting =====': ('Error 01', 'Some lanes are not active'),
 }
+_COMPILED_ERROR_PATTERNS = [
+    (re.compile(pattern), code, msg)
+    for pattern, (code, msg) in TERMINAL_ERROR_PATTERNS.items()
+]
+
+DEFAULT_SCAN_END_PATTERNS = [
+    r'>>> Interfaces\s+destroyed <<<',
+    r'@@@ End of CMSIT miniDAQ @@@',
+]
+
+# Códigos de color ANSI que Ph2_ACF mete en sus logs (p. ej. "\033[1m\033[33m")
+ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
+
+# La salida del DAQ se decodifica como texto; un byte inválido no debe tumbar la lectura
+_TEXT_OPTIONS = dict(text=True, encoding="utf-8", errors="replace")
 
 
 class Terminal:
@@ -30,30 +43,24 @@ class Terminal:
                                             cwd="/app/RD53A_GUI")
 
     line_callback: callable(str) invocado con cada línea de stdout en tiempo real.
+
+    timeout: en run() es el tiempo máximo de ejecución del comando. En
+    run_scan() es la espera máxima a que el proceso termine una vez cerrada
+    su salida; el scan en sí no tiene límite (se para con send_enter()/kill()),
+    así un scan largo nunca se corta a mitad. None = sin límite.
     """
 
-    def __init__(self, timeout: int = 30, verbose: bool = False,
+    def __init__(self, timeout: int | None = 30, verbose: bool = False,
                  line_callback: Callable[[str], None] | None = None):
         self.timeout = timeout
         self.verbose = verbose
         self.line_callback = line_callback
         self._proc: subprocess.Popen | None = None
-
-        self.default_scan_end_patterns = [
-            r'>>> Interfaces\s+destroyed <<<',
-            r'@@@ End of CMSIT miniDAQ @@@',
-        ]
+        self.default_scan_end_patterns = list(DEFAULT_SCAN_END_PATTERNS)
 
         if verbose:
+            # Sin tocar handlers: los mensajes DEBUG suben por propagación
             logger.setLevel(logging.DEBUG)
-            logger.handlers.clear()
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.DEBUG)
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            console_handler.setFormatter(formatter)
-            logger.addHandler(console_handler)
-        else:
-            logger.setLevel(logging.WARNING)
 
     # ------------------------------------------------------------------
     # Context manager
@@ -84,14 +91,15 @@ class Terminal:
             True si el Enter se envió con éxito, False si el proceso no
             estaba vivo o stdin no estaba disponible.
         """
-        if self._proc and self._proc.poll() is None and self._proc.stdin:
+        proc = self._proc
+        if proc is not None and proc.poll() is None and proc.stdin:
             try:
-                self._proc.stdin.write('\n')
-                self._proc.stdin.flush()
+                proc.stdin.write('\n')
+                proc.stdin.flush()
                 logger.debug("Enter sent to process stdin")
                 return True
-            except OSError as e:
-                logger.warning(f"send_enter failed: {e}")
+            except (OSError, ValueError) as e:   # ValueError: stdin ya cerrado
+                logger.warning("send_enter failed: %s", e)
         return False
 
     def kill(self):
@@ -101,19 +109,27 @@ class Terminal:
         Úsalo solo como fallback de emergencia. Para parar CMSITminiDAQ
         en modo standalone usa send_enter() para un cierre limpio del .raw.
         """
-        if self._proc and self._proc.poll() is None:
-            self._proc.send_signal(signal.SIGINT)
-            logger.debug("SIGINT sent to process")
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.send_signal(signal.SIGINT)
+                logger.debug("SIGINT sent to process")
+            except ProcessLookupError:   # terminó entre poll() y send_signal()
+                pass
 
     def close(self):
-        """Termina el proceso en curso si sigue vivo."""
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-            logger.debug("Process closed")
+        """Termina el proceso en curso si sigue vivo y libera sus pipes."""
+        proc = self._proc
+        if proc is not None:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                logger.debug("Process closed")
+            self._close_pipes(proc)
         self._proc = None
 
     # ------------------------------------------------------------------
@@ -128,7 +144,7 @@ class Terminal:
         Lanza TerminalCommandError si la salida contiene patrones de error conocidos.
         """
         cmd_timeout = timeout if timeout is not None else self.timeout
-        logger.debug(f"run: {command}")
+        logger.debug("run: %s", command)
 
         try:
             result = subprocess.run(
@@ -136,18 +152,18 @@ class Terminal:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
                 timeout=cmd_timeout,
                 cwd=cwd,
+                **_TEXT_OPTIONS,
             )
         except subprocess.TimeoutExpired:
-            raise TerminalTimeOutError(command)
+            raise TerminalTimeOutError(command) from None
 
         output = result.stdout or ""
         self._check_for_errors(output)
 
         if self.verbose and output.strip():
-            logger.info(f"Output:\n{output}")
+            logger.info("Output:\n%s", output)
 
         if self.line_callback:
             for line in output.splitlines():
@@ -168,52 +184,51 @@ class Terminal:
         compiled = [re.compile(p) for p in patterns]
         cmd_timeout = timeout if timeout is not None else self.timeout
 
-        logger.debug(f"run_scan: {command}")
+        logger.debug("run_scan: %s", command)
 
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             command,
             shell=True,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
             cwd=cwd,
+            **_TEXT_OPTIONS,
         )
+        self._proc = proc
 
         full_output_lines: list[str] = []
         matched_pattern: str | None = None
 
         try:
-            for raw_line in self._proc.stdout:
+            for raw_line in proc.stdout:
                 line = raw_line.rstrip()
                 full_output_lines.append(line)
                 self._emit_line(line)
 
                 if matched_pattern is None:
-                    for i, pattern in enumerate(compiled):
-                        if pattern.search(line):
-                            matched_pattern = patterns[i]
-                            logger.debug(f"End pattern matched: {matched_pattern}")
+                    for pattern, regex in zip(patterns, compiled):
+                        if regex.search(line):
+                            matched_pattern = pattern
+                            logger.debug("End pattern matched: %s", matched_pattern)
                             break
 
             # Esperar a que el proceso termine limpiamente
             try:
-                self._proc.wait(timeout=cmd_timeout)
+                proc.wait(timeout=cmd_timeout)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
-                raise TerminalTimeOutError(command)
+                proc.kill()
+                proc.wait()
+                raise TerminalTimeOutError(command) from None
 
         finally:
-            try:
-                self._proc.stdout.close()
-            except Exception:
-                pass
+            self._close_pipes(proc)
 
         full_output = '\n'.join(full_output_lines)
         self._check_for_errors(full_output)
 
         if self.verbose and full_output.strip():
-            logger.info(f"Output:\n{full_output}")
+            logger.info("Output:\n%s", full_output)
 
         return full_output, matched_pattern
 
@@ -227,15 +242,24 @@ class Terminal:
     def execute_and_print(self, command: str, timeout: int | None = None):
         output = self.run(command, timeout)
         if output:
-            logger.info(f"Output of '{command}':\n{output}")
+            logger.info("Output of '%s':\n%s", command, output)
 
     # ------------------------------------------------------------------
     # Helpers internos
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _close_pipes(proc: subprocess.Popen) -> None:
+        for pipe in (proc.stdin, proc.stdout):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except (OSError, ValueError):
+                    pass
+
     def _check_for_errors(self, output: str):
-        for pattern, (error_code, error_msg) in TERMINAL_ERROR_PATTERNS.items():
-            if re.search(pattern, output):
+        for regex, error_code, error_msg in _COMPILED_ERROR_PATTERNS:
+            if regex.search(output):
                 raise TerminalCommandError(error_code, error_msg, output)
 
     def _emit_line(self, line: str):

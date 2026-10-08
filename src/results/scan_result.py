@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-@dataclass(slots=True)
+@dataclass
 class ScanResult:
     """Represents the outcome of a calibration or acquisition scan on an RD53A chip.
 

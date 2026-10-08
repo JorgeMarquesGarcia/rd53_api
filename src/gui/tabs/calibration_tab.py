@@ -1,41 +1,47 @@
 """calibration_tab.py - Tab de calibración del sistema RD53A."""
 from __future__ import annotations
 import logging
+from pathlib import Path
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QCheckBox,
-    QListWidget, QListWidgetItem, QTextEdit,
-    QTabWidget, QTabBar, QToolButton, QSpacerItem, QSizePolicy, QProgressBar,
+    QTabWidget, QSpacerItem, QSizePolicy, QProgressBar,
 )
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 
-from pathlib import Path
 from src.config.system_config import SystemConfig
 from src.calibration.scans.scurve      import SCurveScan
 from src.calibration.scans.threqu      import ThresholdEqualizationScan
 from src.calibration.scans.noise       import NoiseScan
 from src.calibration.scans.pixel_alive import PixelAliveScan
+from src.calibration.scans.gain        import GainScan
+from src.calibration.scans.gainopt     import GainOptimizationScan
 import src.core.num_manager as num_mgr
-
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QColor
-
-from src.config.system_config import SystemConfig
-
-
 from src.core.results_finder import ANALYSIS_FILE_SUFFIX
+from src.gui.gui_utils import append_log, install_tab_close_button, make_log_view
 from src.plotter.calibration_view import build_chip_plots_widget, discover_chips
 
 # ---------------------------------------------------------------------------
-# Análisis disponibles Hay que añadir que el usuario pueda modificar Vthreshold_LIN
+# Análisis disponibles. Pendiente: que el usuario pueda modificar Vthreshold_LIN
 # ---------------------------------------------------------------------------
 AVAILABLE_ANALYSES = [
     ("scurve",     "S-Curve Scan",              "Threshold & noise measurement via injection scan"),
     ("threqu",     "Threshold Equalization",     "TDAC equalization to uniform threshold"),
     ("noise",      "Noise Scan",                 "Identify noisy pixels at operating threshold"),
     ("pixelalive", "Pixel Alive",                "Verify pixel responsivity with injection"),
+    ("gainopt",    "Gain Optimization",          "Tune KRUM_CURR_LIN so TargetCharge reaches max ToT (updates the XML)"),
+    ("gain",       "Gain Scan",                  "ToT vs injected charge, per-pixel linear fit"),
 ]
 
-
+SCAN_MAP = {
+    "scurve":     SCurveScan,
+    "threqu":     ThresholdEqualizationScan,
+    "noise":      NoiseScan,
+    "pixelalive": PixelAliveScan,
+    "gainopt":    GainOptimizationScan,
+    "gain":       GainScan,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -45,29 +51,28 @@ class CalibrationWorker(QObject):
     log_message  = pyqtSignal(str)
     finished     = pyqtSignal(str, bool, int)   # (analysis_key, success, run_number)
     all_finished = pyqtSignal()
-    plots_loading = pyqtSignal(bool)  # True=empezando, False=terminado
-
-    
 
     def __init__(self, analyses: list[str]):
         super().__init__()
         self._analyses = analyses
         self._abort    = False
+        self._current_scan = None
 
     def run(self):
+        # all_finished se emite siempre: si no, la GUI se quedaría con ABORT
+        # activo y el hilo sin cerrar.
+        try:
+            self._run_sequence()
+        except Exception as e:
+            self.log_message.emit(f"[ERROR] Calibration sequence: {e}")
+        finally:
+            self._current_scan = None
+            self.all_finished.emit()
 
-
-        SCAN_MAP = {
-            "scurve":     SCurveScan,
-            "threqu":     ThresholdEqualizationScan,
-            "noise":      NoiseScan,
-            "pixelalive": PixelAliveScan,
-        }
-
+    def _run_sequence(self):
         active_chips = SystemConfig.get_active_hw_chips()
         if not active_chips:
             self.log_message.emit("[ERROR] No active chips configured.")
-            self.all_finished.emit()
             return
 
         # Configurar num_manager con la ruta al RunNumber.txt
@@ -99,6 +104,8 @@ class CalibrationWorker(QObject):
                 self._current_scan = scan
                 scan._line_callback = lambda line: self.log_message.emit(f"  {line}")
                 output = scan.run()
+                for msg in scan.report:
+                    self.log_message.emit(msg)
 
                 if scan.scan_ended:
                     self.log_message.emit(f"[OK]    {analysis.upper()} completed "
@@ -113,14 +120,14 @@ class CalibrationWorker(QObject):
             except Exception as e:
                 self.log_message.emit(f"[ERROR] {analysis.upper()}: {e}")
                 self.finished.emit(analysis, False, -1)
-
-        self.all_finished.emit()
+            finally:
+                self._current_scan = None
 
     def abort(self):
         self._abort = True
-        if hasattr(self, '_current_scan') and self._current_scan:
-            self._current_scan.abort()
-            self._current_scan = None
+        scan = self._current_scan
+        if scan is not None:
+            scan.abort()
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +142,8 @@ class CalibrationTab(QWidget):
         self._worker: CalibrationWorker | None = None
         self._thread: QThread | None = None
         self._file_tabs: dict[str, QWidget] = {}   # ruta .root -> pestaña de resultados
+        self._completed = 0
+        self._total = 0
         self._build_ui()
         self.logger.info("CalibrationTab inicializado.")
 
@@ -234,9 +243,7 @@ class CalibrationTab(QWidget):
         header.addWidget(clear_btn)
         layout.addLayout(header)
 
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setPlaceholderText("Calibration output will appear here...")
+        self._log = make_log_view("Calibration output will appear here...")
         layout.addWidget(self._log)
 
         return panel
@@ -309,12 +316,14 @@ class CalibrationTab(QWidget):
     # ------------------------------------------------------------------
     def _on_analysis_finished(self, analysis: str, success: bool, run_number: int):
         self._completed += 1
-        pct = int(self._completed / self._total * 100)
+        pct = int(self._completed / self._total * 100) if self._total else 100
         self._progress.setValue(pct)
         if success and run_number >= 0:
             self.plots_loading.emit(True)
-            self._load_plots(analysis, run_number)
-            self.plots_loading.emit(False)
+            try:
+                self._load_plots(analysis, run_number)
+            finally:
+                self.plots_loading.emit(False)
 
     def _on_all_finished(self):
         self._btn_abort.setEnabled(False)
@@ -373,24 +382,11 @@ class CalibrationTab(QWidget):
             self._close_plot_tab(self._plot_tabs.indexOf(old))
 
         idx = self._plot_tabs.addTab(inner, root_path.stem)
-        self._set_tab_close_button(self._plot_tabs, idx)
+        install_tab_close_button(self._plot_tabs, idx, self._close_plot_tab)
         self._plot_tabs.setTabToolTip(idx, str(root_path))
         self._plot_tabs.setCurrentIndex(idx)
         self._file_tabs[str(root_path)] = inner
         self._log_write(f"[OK]   {len(chips)} chip(s) plotted.")
-
-    def _set_tab_close_button(self, tabs: QTabWidget, index: int) -> None:
-        button = QToolButton(tabs)
-        button.setAutoRaise(True)
-        button.setCursor(Qt.ArrowCursor)
-        button.setToolTip("Close tab")
-        button.setIcon(tabs.style().standardIcon(tabs.style().SP_TitleBarCloseButton))
-        button.setStyleSheet(
-            "QToolButton { background: transparent; border: none; padding: 0px; }"
-            "QToolButton:hover { background: transparent; }"
-        )
-        button.clicked.connect(lambda *_: self._close_plot_tab(index))
-        tabs.tabBar().setTabButton(index, QTabBar.RightSide, button)
 
     def _close_plot_tab(self, index: int):
         """Cierra una pestaña de resultados y libera sus canvas."""
@@ -408,8 +404,5 @@ class CalibrationTab(QWidget):
     # Helper log
     # ------------------------------------------------------------------
     def _log_write(self, msg: str):
-        self._log.append(msg)
-        self._log.verticalScrollBar().setValue(
-            self._log.verticalScrollBar().maximum()
-        )
+        append_log(self._log, msg)
         self.logger.info(msg)

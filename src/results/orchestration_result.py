@@ -6,13 +6,13 @@ summarising the state transition and key metrics of that iteration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 
-from workflow.system_state import SystemState
+from src.workflow.system_state import SystemState
 
 
-@dataclass(slots=True)
+@dataclass
 class OrchestrationResult:
     """High-level summary of one StateOrchestrator iteration.
 

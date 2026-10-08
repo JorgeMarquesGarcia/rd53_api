@@ -10,14 +10,16 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QLabel, QPushButton,
-    QTextEdit, QSpinBox, QRadioButton,
+    QSpinBox, QRadioButton,
     QButtonGroup,
     QScrollArea, QProgressBar,
 )
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QObject
 
+from src.chip.detector_geometry import DETECTOR_LAYOUT
 from src.config.system_config import SystemConfig
 from src.config.acquisition_config import AcquisitionConfig
+from src.gui.gui_utils import append_log, make_log_view
 from src.gui.trajectory_view import TrajectoryView
 
 # ---------------------------------------------------------------------------
@@ -55,12 +57,21 @@ def _results_dir() -> Path:
         return Path("results")
 
 
+def _configured_results_dir() -> Path | None:
+    """ROOT output directory de Config, o None si no está configurado."""
+    try:
+        return SystemConfig.get_root_path()
+    except Exception:
+        return None
+
+
 # ===========================================================================
 # Worker — Timed
 # ===========================================================================
 
 class TimedAcquisitionWorker(QObject):
     log_message = pyqtSignal(str)
+    root_ready  = pyqtSignal(str)   # .root convertido (se emite antes de finished(True))
     finished    = pyqtSignal(bool)
 
     def __init__(self, chips: list[tuple[int, int]], scan_time: int,
@@ -78,6 +89,7 @@ class TimedAcquisitionWorker(QObject):
             f"[START] Physics scan  chips={self._chips}  time={self._scan_time}s  "
             f"triggers={self._triggers}  vthresh={self._vthresh_per_chip}"
         )
+        success = False
         try:
             from src.acquisition.scans.physics import PhysicsScan
 
@@ -93,23 +105,26 @@ class TimedAcquisitionWorker(QObject):
 
             if not self._scan.scan_ended:
                 self.log_message.emit("[WARN] Scan ended without end-pattern — possible abort.")
-                self.finished.emit(False)
                 return
 
             self.log_message.emit("[OK]   Scan completed successfully.")
             self.log_message.emit("[START] Readback (CMSITminiDAQ -b)...")
 
-            _, raw_path = self._scan.run_raw2root(
+            # El .raw que anunció el DAQ; si no se vio, se deduce del RunNumber
+            _, root_path = self._scan.run_raw2root(
                 xml_path=SystemConfig.get_xml_path(),
-                results_dir=SystemConfig.get_root_path(),
+                results_dir=_configured_results_dir(),
+                raw_path=self._scan.raw_path,
                 line_callback=lambda line: self.log_message.emit(f"[DAQ] {line}"),
             )
-            self.log_message.emit(f"[OK]   Readback saved: {raw_path}")
-            self.finished.emit(True)
+            self.log_message.emit(f"[OK]   Readback saved: {root_path}")
+            self.root_ready.emit(str(root_path))
+            success = True
 
         except Exception as e:
             self.log_message.emit(f"[ERROR] {e}")
-            self.finished.emit(False)
+        finally:
+            self.finished.emit(success)
 
     def end_scan(self):
         if self._scan is not None:
@@ -194,10 +209,12 @@ class HitAnalysisWorker(QObject):
         try:
             from src.analysis.analysis_hit import HitAnalysis
             from src.analysis.analysis_noise import NoiseAnalysis, MIN_REPEATS
-            from src.analysis.analysis_base import hits_per_chip, format_chips
+            from src.analysis.analysis_base import hits_per_chip, format_chips, REQUIRED_COLUMNS
             from src.core.exceptions import NAErrorNoHits
 
-            root_manager = SystemConfig.create_root_manager(path=self._root_path)
+            # Solo las ramas que usan los análisis: carga más rápida y con menos memoria
+            root_manager = SystemConfig.create_root_manager(path=self._root_path,
+                                                            branches=REQUIRED_COLUMNS)
             root_manager.load(self._root_path)
             if self.warn_empty_chips:
                 empty = [c for c, n in hits_per_chip(root_manager.arrays).items() if n == 0]
@@ -413,7 +430,7 @@ class StandaloneAcquisitionWorker(QObject):
 
             # Polling del .raw hasta que supere el límite o STOP/ABORT/fin de DAQ
             results_dir  = _results_dir()
-            raw_path     = self._poll_raw(daq_done, results_dir)
+            raw_path     = self._poll_raw(daq_done, results_dir, scan)
 
             if self._abort_flag:
                 scan.abort()
@@ -426,7 +443,7 @@ class StandaloneAcquisitionWorker(QObject):
                     self._dbg("DAQ did not close after Enter — sending SIGINT.")
                     scan.abort()
                     daq_done.wait(timeout=10)
-                last_raw = self._find_latest_raw(results_dir)
+                last_raw = self._current_raw(scan, results_dir)
                 if last_raw is not None:
                     self._dbg(f"Stopped — last .raw: {last_raw.name}")
                 return last_raw, scan.raw_path is not None
@@ -458,7 +475,8 @@ class StandaloneAcquisitionWorker(QObject):
     # Polling del .raw
     # ------------------------------------------------------------------
 
-    def _poll_raw(self, daq_done: threading.Event, results_dir: Path) -> Path | None:
+    def _poll_raw(self, daq_done: threading.Event, results_dir: Path,
+                  scan=None) -> Path | None:
         """
         Polling en bucle hasta que:
           - el .raw ≥ límite           → devuelve Path
@@ -478,12 +496,16 @@ class StandaloneAcquisitionWorker(QObject):
 
             poll_n += 1
 
-            raw_path = self._find_latest_raw(results_dir)
+            raw_path = self._current_raw(scan, results_dir)
             if raw_path is None:
                 self._dbg(f"[poll #{poll_n}] No .raw found yet in {results_dir}")
                 continue
 
-            size_b = raw_path.stat().st_size
+            try:
+                size_b = raw_path.stat().st_size
+            except OSError as e:   # el .raw puede desaparecer/renombrarse entre medias
+                self._dbg(f"[poll #{poll_n}] Cannot stat {raw_path.name}: {e}")
+                continue
             size_mb = size_b / 1024 ** 2
             limit_mb = self._raw_size_limit / 1024 ** 2
             self._dbg(
@@ -500,6 +522,14 @@ class StandaloneAcquisitionWorker(QObject):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @classmethod
+    def _current_raw(cls, scan, results_dir: Path) -> Path | None:
+        """El .raw de este ciclo: el que anunció el DAQ o, si no se vio, el más reciente."""
+        announced = getattr(scan, "raw_path", None)
+        if announced is not None and announced.is_file():
+            return announced
+        return cls._find_latest_raw(results_dir)
 
     @staticmethod
     def _find_latest_raw(results_dir: Path) -> Path | None:
@@ -533,7 +563,11 @@ class AcquisitionTab(QWidget):
         # Estado — Timed
         self._worker: QObject | None = None
         self._thread: QThread | None = None
-        self._last_hit_analysis      = None
+        self._timed_root: str | None = None              # .root convertido de la última toma
+        self._timed_hit_worker: HitAnalysisWorker | None = None
+        self._timed_hit_thread: QThread | None = None
+        # Tracks del último análisis timed: (plot_coord, active_chips)
+        self._last_tracks: tuple[list, list] | None = None
 
         # Estado — Standalone
         self._standalone_worker: StandaloneAcquisitionWorker | None = None
@@ -706,9 +740,7 @@ class AcquisitionTab(QWidget):
         header.addWidget(clear_btn)
         layout.addLayout(header)
 
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setPlaceholderText("Acquisition output will appear here...")
+        self._log = make_log_view("Acquisition output will appear here...")
         layout.addWidget(self._log)
         return panel
 
@@ -761,7 +793,7 @@ class AcquisitionTab(QWidget):
         if timed:
             self._standalone_status.hide()   # nunca visible en Timed, ni con texto residual
         # En Standalone NO se muestra aquí: permanece oculto hasta START
-        # (lo muestra _start_standalone(), línea ~781-782)
+        # (lo muestra _start_standalone())
         self._btn_stop_acq.setEnabled(False)   # STOP ACQ no aplica en modo Timed
     # ==================================================================
     # Arranque
@@ -776,6 +808,12 @@ class AcquisitionTab(QWidget):
             return
         if self._job_active or self._closed_raws:
             self._log_write("[WARN] Previous session still converting .raw files — wait for it to finish.")
+            return
+        if self._timed_hit_thread and self._timed_hit_thread.isRunning():
+            self._log_write("[WARN] Previous acquisition still being analysed — wait for it to finish.")
+            return
+        if not SystemConfig.is_configured():
+            self._log_write("[ERROR] System not configured. Press APPLY CONFIG in the Config tab.")
             return
 
         self._log_write(f"[DEBUG] ph2_acf_dir={SystemConfig.get_ph2_acf_dir()}")
@@ -807,6 +845,7 @@ class AcquisitionTab(QWidget):
     # ------------------------------------------------------------------
 
     def _start_timed(self, chips: list[tuple[int, int]]):
+        self._timed_root = None
         self._worker = TimedAcquisitionWorker(
             chips=chips,
             scan_time=self._scan_time.value(),
@@ -817,20 +856,24 @@ class AcquisitionTab(QWidget):
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.log_message.connect(self._log_write)
+        self._worker.root_ready.connect(self._on_timed_root_ready)
         self._worker.finished.connect(self._on_timed_finished)
 
         self._set_running_ui(True)
         self._thread.start()
+
+    def _on_timed_root_ready(self, root_path: str):
+        self._timed_root = root_path
 
     def _on_timed_finished(self, success: bool):
         self._set_running_ui(False)
         if self._thread:
             self._thread.quit()
             self._thread.wait()
-        if not success:
+        if not success or self._timed_root is None:
             self._log_write("[DONE] Acquisition ended (no trajectories available).")
             return
-        self._run_analysis_timed()
+        self._run_analysis_timed(self._timed_root)
 
     # ------------------------------------------------------------------
     # Standalone
@@ -838,7 +881,7 @@ class AcquisitionTab(QWidget):
 
     def _start_standalone(self, chips: list[tuple[int, int]]):
         vthresh = {k: s.value() for k, s in self._vthresh_spinboxes.items()}
-        self._last_hit_analysis = None
+        self._last_tracks       = None
         self._shown_root        = None
         self._shown_tracks      = 0
         self._closed_tracks     = 0
@@ -1069,6 +1112,12 @@ class AcquisitionTab(QWidget):
         self._update_start_enabled()
         self._btn_abort.setEnabled(running)
         self._btn_stop_acq.setEnabled(running and is_standalone)
+        # El modo no se puede cambiar con una toma en marcha (dejaría STOP ACQ
+        # desactivado y la UI incoherente con lo que se está ejecutando)
+        self._radio_timed.setEnabled(not running)
+        self._radio_cont.setEnabled(not running)
+        self._scan_time.setEnabled(not running and not is_standalone)
+        self._lbl_scan_time.setEnabled(not is_standalone)
         self._btn_show_traj.setEnabled(False)
         self._btn_save_traj.setEnabled(False)
         if running:
@@ -1138,8 +1187,6 @@ class AcquisitionTab(QWidget):
         Se llama al aplicar la configuración: descarta cualquier edición manual
         previa (decisión acordada: el XML es la fuente de verdad).
         """
-        from src.chip.detector_geometry import DETECTOR_LAYOUT
-
         self._vthresh_spinboxes.clear()
         self._vthresh_manual.clear()
 
@@ -1244,42 +1291,46 @@ class AcquisitionTab(QWidget):
     # Análisis post-scan (modo timed)
     # ==================================================================
 
-    def _run_analysis_timed(self):
-        self._log_write("[INFO] Running HitAnalysis on latest ROOT file...")
-        try:
-            from src.analysis.analysis_hit import HitAnalysis
-            from src.analysis.analysis_noise import NoiseAnalysis
+    def _run_analysis_timed(self, root_path: str):
+        """NoiseAnalysis + HitAnalysis del .root recién convertido, en un hilo
+        aparte para no congelar la GUI con ficheros grandes."""
+        self._log_write(f"[INFO] Running HitAnalysis on {Path(root_path).name}...")
+        self._last_tracks = None
 
-            root_manager = SystemConfig.create_root_manager()
-            root_manager.load()
-            noise = NoiseAnalysis(root_manager)
-            self._last_hit_analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
-            n = len(self._last_hit_analysis.plot_coord)
-            self._log_write(f"[OK]   HitAnalysis complete: {n} tracks reconstructed.")
+        worker = HitAnalysisWorker(root_path)
+        self._retire_thread(self._timed_hit_thread)
+        self._timed_hit_worker = worker
+        self._timed_hit_thread = QThread()
+        worker.moveToThread(self._timed_hit_thread)
+        self._timed_hit_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.analysed.connect(self._on_timed_analysed)
+        worker.finished.connect(self._timed_hit_thread.quit)
+        self._timed_hit_thread.start()
 
-            if n == 0:
-                self._log_write("[WARN] No tracks found.")
-                return
+    def _on_timed_analysed(self, _root_path: str, plot_coord: list, active_chips: list):
+        n = len(plot_coord)
+        self._log_write(f"[OK]   HitAnalysis complete: {n} tracks reconstructed.")
+        if n == 0:
+            self._log_write("[WARN] No tracks found.")
+            return
 
-            self._btn_show_traj.setEnabled(True)
-            self._log_write("[DONE] Ready to visualize trajectories.")
-
-        except Exception as e:
-            self._log_write(f"[ERROR] Analysis failed: {e}")
-            self.logger.exception("HitAnalysis error")
+        self._last_tracks = (plot_coord, active_chips)
+        self._btn_show_traj.setEnabled(True)
+        self._log_write("[DONE] Ready to visualize trajectories.")
 
     # ==================================================================
     # Visualización
     # ==================================================================
 
     def _show_trajectories(self):
-        if self._last_hit_analysis is None:
+        if self._last_tracks is None:
             self._log_write("[WARN] No analysis data available.")
             return
-        plot_coord = self._last_hit_analysis.plot_coord
+        plot_coord, active_chips = self._last_tracks
         self._shown_root   = None
         self._shown_tracks = len(plot_coord)
-        self._trajectory_view.reset(self._last_hit_analysis.active_chips)
+        self._trajectory_view.reset(active_chips)
         self._show_trajectory_view()
         self._trajectory_view.animate(plot_coord)
         self._btn_save_traj.setEnabled(True)
@@ -1287,11 +1338,7 @@ class AcquisitionTab(QWidget):
 
     def _save_trajectories(self):
         try:
-            try:
-                output_dir = SystemConfig.get_root_path().parent / "plots"
-            except Exception:
-                output_dir = None
-            path = self._trajectory_view.save(output_dir)
+            path = self._trajectory_view.save(SystemConfig.get_plots_dir())
             self._log_write(f"[OK]   Plot saved: {path}")
         except Exception as e:
             self._log_write(f"[ERROR] Cannot save plot: {e}")
@@ -1314,8 +1361,5 @@ class AcquisitionTab(QWidget):
     # ==================================================================
 
     def _log_write(self, msg: str):
-        self._log.append(msg)
-        self._log.verticalScrollBar().setValue(
-            self._log.verticalScrollBar().maximum()
-        )
+        append_log(self._log, msg)
         self.logger.info(msg)

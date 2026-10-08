@@ -5,7 +5,9 @@ Sin dependencias de Qt, ROOT ni SystemConfig: recibe las rutas como argumento
 para poder testearse de forma aislada.
 """
 from __future__ import annotations
+import heapq
 import logging
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -22,6 +24,8 @@ ANALYSIS_FILE_SUFFIX: dict[str, str] = {
     "threqu":     "ThrEqualization",
     "noise":      "NoiseScan",
     "pixelalive": "PixelAlive",
+    "gainopt":    "GainOptimization",
+    "gain":       "Gain",
 }
 
 # Ficheros .root de calibración
@@ -37,7 +41,8 @@ def detect_analysis(path: str | Path) -> str | None:
     Devuelve None si el nombre no corresponde a ningún análisis de calibración.
     """
     name = Path(path).name.lower()
-    for key, suffix in ANALYSIS_FILE_SUFFIX.items():
+    # Sufijo más largo primero: "GainOptimization" también contiene "Gain"
+    for key, suffix in sorted(ANALYSIS_FILE_SUFFIX.items(), key=lambda kv: -len(kv[1])):
         if suffix.lower() in name:
             return key
     return None
@@ -69,15 +74,21 @@ def latest_files(
     patterns = [p.lower() for p in name_patterns] if name_patterns else None
 
     candidates: list[tuple[float, Path]] = []
-    for p in folder.iterdir():
-        try:
-            if not p.is_file() or p.suffix.lower() not in exts:
+    # scandir: el filtrado por nombre no toca el disco y stat() solo se hace
+    # para los ficheros que pasan el filtro
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            name = entry.name.lower()
+            if os.path.splitext(name)[1] not in exts:
                 continue
-            if patterns and not any(pat in p.name.lower() for pat in patterns):
+            if patterns and not any(pat in name for pat in patterns):
                 continue
-            candidates.append((p.stat().st_mtime, p))
-        except OSError as e:  # fichero desaparecido entre iterdir y stat
-            logger.debug("Skipping %s: %s", p, e)
+            try:
+                if not entry.is_file():
+                    continue
+                candidates.append((entry.stat().st_mtime, Path(entry.path)))
+            except OSError as e:  # fichero desaparecido entre scandir y stat
+                logger.debug("Skipping %s: %s", entry.path, e)
 
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    return [p for _, p in candidates[:n]]
+    # nlargest equivale a sorted(..., reverse=True)[:n], sin ordenar toda la lista
+    return [p for _, p in heapq.nlargest(n, candidates, key=lambda t: t[0])]

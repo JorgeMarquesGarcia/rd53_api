@@ -1,10 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.colors import Normalize
-from matplotlib.cm import ScalarMappable
 import logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.plotter.plotter_base import PlotterBase

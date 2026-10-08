@@ -1,10 +1,11 @@
 from __future__ import annotations
+import heapq
 import logging
 from collections import Counter
 import awkward as ak
 import numpy as np
 from src.config.root.root_manager import RootManager
-from src.analysis.analysis_base import BaseAnalysis
+from src.analysis.analysis_base import BaseAnalysis, flat_hits, pixel_keys, decode_pixel_keys
 from src.analysis.analysis_hit import TOT_THRESHOLD
 from src.chip.detector_geometry import SENSOR_ROWS, SENSOR_COLS, TOT_MAX
 
@@ -13,6 +14,15 @@ TOT_SATURATED = TOT_MAX   # los píxeles calientes suelen dar siempre el ToT má
 
 ChipKey = tuple[int, int]
 Pixel = tuple[int, int]
+
+
+def _unique_in_order(keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Claves distintas en orden de primera aparición y cuántas veces sale cada una."""
+    if len(keys) == 0:
+        return keys, np.zeros(0, dtype=np.int64)
+    uniq, first, counts = np.unique(keys, return_index=True, return_counts=True)
+    order = np.argsort(first, kind="stable")
+    return uniq[order], counts[order]
 
 
 class NoiseAnalysis(BaseAnalysis):
@@ -75,7 +85,7 @@ class NoiseAnalysis(BaseAnalysis):
     # ------------------------------------------------------------------
     def extract_noisy_events(self):
         noisy_events = self._noise_filter()
-        self.logger.info(f"Filtro de ruido aplicado: {len(noisy_events)} eventos ruidosos detectados")
+        self.logger.info("Filtro de ruido aplicado: %d eventos ruidosos detectados", len(noisy_events))
         return noisy_events
 
     def _multiple_hits(self, data=None):
@@ -96,30 +106,37 @@ class NoiseAnalysis(BaseAnalysis):
         return noisy
 
     # ------------------------------------------------------------------
-    # Criterio B: repeticiones
+    # Conteo vectorizado de hits por (chip, píxel)
     # ------------------------------------------------------------------
+    def _keys_to_counter(self, keys: np.ndarray, counts: np.ndarray) -> Counter:
+        """Counter {((hybrid, lane), (row, col)): n} conservando el orden de las claves."""
+        planes, rows, cols = decode_pixel_keys(keys)
+        chips = self.active_chips
+        return Counter({
+            (chips[p], (r, c)): n
+            for p, r, c, n in zip(planes.tolist(), rows.tolist(), cols.tolist(), counts.tolist())
+        })
+
     def _count_hits_per_pixel(self) -> tuple[Counter, Counter]:
-        """Cuenta hits por (chip, píxel) en todo el fichero: (todos, solo ToT sospechoso)."""
+        """Cuenta hits por (chip, píxel) en todo el fichero: (todos, solo ToT sospechoso).
+
+        Las claves quedan en el orden en que cada píxel aparece por primera vez
+        (en el segundo Counter, su primer hit sospechoso).
+        """
         data = self.clean_data
         if len(data) == 0:
             return Counter(), Counter()
-        nhits = data.RD53_frame_event_nhits
-        # Índice de chip de cada hit: los hits van ordenados por frame (chip)
-        chip_idx = np.repeat(ak.to_numpy(ak.flatten(ak.local_index(nhits, axis=1))),
-                             ak.to_numpy(ak.flatten(nhits))).tolist()
-        rows = ak.to_numpy(ak.flatten(data.RD53_hit_row)).tolist()
-        cols = ak.to_numpy(ak.flatten(data.RD53_hit_col)).tolist()
-        tots = ak.to_numpy(ak.flatten(data.RD53_hit_tot)).tolist()
+        plane, rows, cols, tots = flat_hits(data, self.active_chips)
+        keys = pixel_keys(plane, rows, cols)
+        suspect = (tots < self.tot_threshold) | (tots == TOT_SATURATED)
 
-        all_counts: Counter = Counter()
-        suspect_tot: Counter = Counter()
-        for i, r, c, t in zip(chip_idx, rows, cols, tots):
-            key = (self.active_chips[i], (int(r), int(c)))
-            all_counts[key] += 1
-            if t < self.tot_threshold or t == TOT_SATURATED:
-                suspect_tot[key] += 1
+        all_counts = self._keys_to_counter(*_unique_in_order(keys))
+        suspect_tot = self._keys_to_counter(*_unique_in_order(keys[suspect]))
         return all_counts, suspect_tot
 
+    # ------------------------------------------------------------------
+    # Criterio B: repeticiones
+    # ------------------------------------------------------------------
     def _repeated_pixels(self) -> dict[ChipKey, set[Pixel]]:
         pixels: dict[ChipKey, set[Pixel]] = {}
         for (chip, pixel), n in self._suspect_tot_counts.items():
@@ -141,9 +158,13 @@ class NoiseAnalysis(BaseAnalysis):
     # ------------------------------------------------------------------
     def _log_frequent_pixels(self, top: int = 5) -> None:
         """Píxeles más repetidos por chip en todos los hits, sin filtrar."""
+        by_chip: dict[ChipKey, list[tuple[Pixel, int]]] = {}
+        for (chip, px), n in self._all_counts.items():
+            by_chip.setdefault(chip, []).append((px, n))
+
         for chip in self.active_chips:
-            chip_counts = sorted(((px, n) for (ck, px), n in self._all_counts.items() if ck == chip),
-                                 key=lambda kv: -kv[1])[:top]
+            # nsmallest == sorted(...)[:top]: los empates conservan el orden de aparición
+            chip_counts = heapq.nsmallest(top, by_chip.get(chip, ()), key=lambda kv: -kv[1])
             if not chip_counts:
                 continue
             h, c = chip
@@ -157,23 +178,21 @@ class NoiseAnalysis(BaseAnalysis):
             f"H{h}·{c}: {len(pixels_by_chip.get((h, c), ()))}" for h, c in self.active_chips))
 
     def _count_pixels(self, noisy_events) -> dict[tuple[int, int], dict[tuple[int, int], int]]:
-        pixels_by_chip: dict[tuple[int, int], dict[tuple[int, int], int]] = {}
+        """{chip: {píxel: nº de hits}} de los eventos dados, en orden de aparición.
 
-        for event in noisy_events:
-            n_hits_by_chip = ak.to_list(event.RD53_frame_event_nhits)
-            rows = ak.to_list(event.RD53_hit_row)
-            cols = ak.to_list(event.RD53_hit_col)
-            hit_offset = 0
-
-            for chip_key, n_hits in zip(self.active_chips, n_hits_by_chip):
-                n_hits = int(n_hits)
-                chip_pixels = pixels_by_chip.setdefault(chip_key, {})
-                for row, col in zip(rows[hit_offset:hit_offset + n_hits],
-                                    cols[hit_offset:hit_offset + n_hits]):
-                    pixel = (int(row), int(col))
-                    chip_pixels[pixel] = chip_pixels.get(pixel, 0) + 1
-                hit_offset += n_hits
-
+        Con algún evento, todos los chips activos aparecen como clave (con {}
+        si no tienen hits).
+        """
+        if len(noisy_events) == 0:
+            return {}
+        pixels_by_chip: dict[tuple[int, int], dict[tuple[int, int], int]] = {
+            chip: {} for chip in self.active_chips
+        }
+        plane, rows, cols, _ = flat_hits(noisy_events, self.active_chips)
+        keys, counts = _unique_in_order(pixel_keys(plane, rows, cols))
+        planes, rows, cols = decode_pixel_keys(keys)
+        for p, r, c, n in zip(planes.tolist(), rows.tolist(), cols.tolist(), counts.tolist()):
+            pixels_by_chip[self.active_chips[p]][(r, c)] = n
         return pixels_by_chip
 
     def _noise_stats(self) -> dict[str, float | int]:

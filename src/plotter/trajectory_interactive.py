@@ -216,6 +216,10 @@ class InteractiveCoincidencePlotter:
         if len(event_dict) < 2:
             logger.warning("Evento con %d hit(s): insuficiente para trazar", len(event_dict))
             return None
+        if len(self._detector_z_values(event_dict)) < 2:
+            # Todos los hits en el mismo plano: el ajuste en Z no está definido
+            logger.warning("Evento con hits en un único plano: insuficiente para trazar")
+            return None
         try:
             x_poly, y_poly = self._fit(event_dict)
         except Exception as e:

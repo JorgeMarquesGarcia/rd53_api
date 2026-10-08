@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from pathlib import Path
-from typing import Iterable, Union, Optional
+from typing import Iterable
 from src.chip.register_map import ChipSettings
 from src.config.xml.xml_manager import XmlManager
 from src.config.system_config import SystemConfig
@@ -12,34 +12,32 @@ logger = logging.getLogger(__name__)
 class AcquisitionConfig:
     """
     Helper class for configuring acquisition settings.
-    
+
     NOT a singleton - creates temporary instances to configure
     the global SystemConfig singleton.
-    
+
     Usage:
         acq = AcquisitionConfig()
         acq.setup_acq(ph2_acf_dir, xml_path)
     """
-    
+
     @staticmethod
-    def setup_acq(ph2_acf_dir: Union[str, Path], xml_path: Union[str, Path]) -> None:
+    def setup_acq(ph2_acf_dir: str | Path, xml_path: str | Path) -> None:
         """
         Configure acquisition settings in the global SystemConfig.
-        
+
         Args:
             ph2_acf_dir: Path to Ph2_ACF directory
             xml_path: Path to XML configuration file
         """
-        sys_config = SystemConfig()
-        sys_config.set_ph2_acf_dir(ph2_acf_dir)
-        sys_config.set_xml_path(xml_path)
-        sys_config.create_xml_manager()
-    
+        SystemConfig.set_ph2_acf_dir(ph2_acf_dir)
+        SystemConfig.set_xml_path(xml_path)
+        SystemConfig.create_xml_manager()   # valida que el XML se puede cargar
+
     @staticmethod
     def get_xml_manager() -> XmlManager:
-        """Get the configured XmlManager from SystemConfig."""
-        sys_config = SystemConfig()
-        return sys_config.get_xml_manager()
+        """Create and load an XmlManager for the XML configured in SystemConfig."""
+        return SystemConfig.create_xml_manager()
 
     @staticmethod
     def get_chip_thresholds(
@@ -62,7 +60,7 @@ class AcquisitionConfig:
         Raises:
             SystemNotConfiguredError: if no XML path is configured.
         """
-        xml = SystemConfig().create_xml_manager(read_only=True)
+        xml = SystemConfig.create_xml_manager(read_only=True)
         thresholds: dict[tuple[int, int], int] = {}
         for hybrid_id, rd53_id in chips:
             try:

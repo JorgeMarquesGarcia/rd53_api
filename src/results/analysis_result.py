@@ -10,14 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from scan_result import ScanResult
+from src.results.scan_result import ScanResult
 
 
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass
 class AnalysisResult:
     """Outcome of processing a ROOT file produced by a scan.
 
@@ -63,7 +63,7 @@ class AnalysisResult:
 # Hit analysis
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass
 class HitAnalysisResult(AnalysisResult):
     """Metrics produced by HitAnalysis.
 
@@ -84,7 +84,7 @@ class HitAnalysisResult(AnalysisResult):
 # Latency analysis
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass
 class LatencyAnalysisResult(AnalysisResult):
     """Metrics produced by LatencyAnalysis.
 
@@ -107,7 +107,7 @@ class LatencyAnalysisResult(AnalysisResult):
 # Noise analysis
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass
 class NoiseAnalysisResult(AnalysisResult):
     """Metrics produced by NoiseAnalysis.
 
@@ -130,7 +130,7 @@ class NoiseAnalysisResult(AnalysisResult):
 # Acquisition analysis  (Hit + Noise combined — mirrors AnalysisRunner)
 # ---------------------------------------------------------------------------
 
-@dataclass(slots=True)
+@dataclass
 class AcquisitionAnalysisResult(AnalysisResult):
     """Combined result for an ACQUISITION run (HitAnalysis + NoiseAnalysis).
 

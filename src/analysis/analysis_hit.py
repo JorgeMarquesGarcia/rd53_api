@@ -1,23 +1,11 @@
-from __future__ import annotations
-import logging
-import awkward as ak
-import numpy as np
-
-from src.config.root.root_manager import RootManager
-from src.analysis.analysis_base import BaseAnalysis
-from src.core.exceptions import NAErrorNoHits
-from src.chip.detector_geometry import SENSOR_COLS, SENSOR_ROWS, to_global
-
-TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
-BX_TOLERANCE = 2    # BX máximos entre un hit y el del plano de trigger en su ventana (None = toda la ventana)
-
-
 """Análisis de hits para archivos ROOT.
-Atributos: 
+
+Atributos:
 - active_chips: lista de chips activos detectados en los datos.
 - window_data: un evento por ventana de trigger (los nTRIGxEvent BX que lee cada trigger).
 - hits: awkward array con los hits filtrados según trigger, coincidencia y ToT.
-- plot_coord: awkward array con coordenadas X, Y, Z y ToT para cada evento, usando el hit de máximo ToT por plano.
+- plot_coord: lista con un dict por track {(hybrid_id, chip_lane): (row, col, tot)},
+  usando el hit de máximo ToT por plano, en coordenadas globales.
 
 Funciones principales:
 - _group_trigger_windows: quita los píxeles ruidosos, une los BX de cada trigger en un
@@ -28,8 +16,18 @@ Funciones principales:
 - _layer_filter: filtra eventos por capas específicas.
 - _extract_track_coordinates: obtiene coordenadas de trayectoria usando el hit de máximo ToT por plano
   y escribe en el log los hits de cada track.
-
 """
+from __future__ import annotations
+import awkward as ak
+import numpy as np
+
+from src.config.root.root_manager import RootManager
+from src.analysis.analysis_base import BaseAnalysis, pixel_keys
+from src.core.exceptions import NAErrorNoHits
+from src.chip.detector_geometry import to_global
+
+TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
+BX_TOLERANCE = 2    # BX máximos entre un hit y el del plano de trigger en su ventana (None = toda la ventana)
 
 
 class HitAnalysis(BaseAnalysis):
@@ -55,7 +53,6 @@ class HitAnalysis(BaseAnalysis):
         self._analyzed = False
         self.hits = self._extract_hits()
         self.plot_coord = self._extract_track_coordinates()
-    
 
     def _extract_hits(self):
         """Extrae los hits aplicando el filtro de trigger y luego el detector."""
@@ -63,20 +60,18 @@ class HitAnalysis(BaseAnalysis):
         self.trigger_data = self._apply_trigger_filter()
         if not self._datacheck():
             raise NAErrorNoHits("No events with hits found after applying trigger filter.")
-        self.logger.info(f"Trigger filter applied: {len(self.trigger_data)} trigger windows with hits in the trigger plane")
+        self.logger.info("Trigger filter applied: %d trigger windows with hits in the trigger plane",
+                         len(self.trigger_data))
 
         coincidence_hits = self.coincidence()
-        self.logger.info(f"Coincidence filter applied: {len(coincidence_hits)} windows with hits in other chips")
+        self.logger.info("Coincidence filter applied: %d windows with hits in other chips",
+                         len(coincidence_hits))
 
-        tot_filter = self._tot_filter(coincidence_hits, tot_threshold=self.tot_threshold)
-        self.logger.info(
-            f"ToT filter applied: {len(tot_filter)} windows with some hit ToT >= {self.tot_threshold}"
-        )
-        hits = tot_filter
+        hits = self._tot_filter(coincidence_hits, tot_threshold=self.tot_threshold)
+        self.logger.info("ToT filter applied: %d windows with some hit ToT >= %s",
+                         len(hits), self.tot_threshold)
         self._analyzed = True
         return hits
-
-    
 
     def _group_trigger_windows(self):
         """Une en un solo evento las entradas de cada ventana de trigger.
@@ -136,6 +131,7 @@ class HitAnalysis(BaseAnalysis):
         sel = np.flatnonzero(keep)
         sel = sel[np.lexsort((hit_plane[sel], hit_window[sel]))]
         windows, w_idx = np.unique(hit_window[sel], return_inverse=True)
+        w_idx = w_idx.reshape(-1)
         counts = np.zeros((len(windows), n_planes), dtype=np.int64)
         np.add.at(counts, (w_idx, hit_plane[sel]), 1)
         per_window = counts.sum(axis=1)
@@ -153,33 +149,34 @@ class HitAnalysis(BaseAnalysis):
         """Máscara de los hits que caen en un píxel ruidoso de su plano."""
         if not self.noisy_pixels:
             return np.zeros(len(hit_plane), dtype=bool)
-        noisy_keys = [
-            (plane * SENSOR_ROWS + row) * SENSOR_COLS + col
+        noisy = [
+            (plane, row, col)
             for plane, chip in enumerate(self.active_chips)
             for row, col in self.noisy_pixels.get(chip, ())
         ]
-        hit_keys = ((hit_plane * SENSOR_ROWS + rows.astype(np.int64)) * SENSOR_COLS
-                    + cols.astype(np.int64))
-        noisy = np.isin(hit_keys, noisy_keys)
+        if noisy:
+            n_planes, n_rows, n_cols = (np.array(v, dtype=np.int64) for v in zip(*noisy))
+            noisy_keys = pixel_keys(n_planes, n_rows, n_cols)
+        else:
+            noisy_keys = np.zeros(0, dtype=np.int64)
+        is_noisy = np.isin(pixel_keys(hit_plane, rows, cols), noisy_keys)
         self.logger.info("Noisy pixels: %d hit(s) removed (%d noisy pixel(s) masked)",
-                         int(noisy.sum()), len(noisy_keys))
-        return noisy
+                         int(is_noisy.sum()), len(noisy))
+        return is_noisy
 
     def _apply_trigger_filter(self):
         """Devuelve las ventanas con hits en el plano de trigger (plano 0)."""
         return self.window_data[self.window_data.RD53_frame_event_nhits[:, 0] != 0]
-   
+
     def _datacheck(self):
         """Comprueba si existen eventos tras aplicar el filtro de trigger."""
-        if len(self.trigger_data) == 0:
-            return False
-        return True
-    
+        return len(self.trigger_data) != 0
+
     def coincidence(self):
         """Filtra eventos con hits en otros chips del detector."""
         self._analyzed = True
         return self._detector_filter()
-    
+
     def _detector_filter(self, data=None):
         """Implementa el filtro de detector."""
         if data is None:
@@ -196,14 +193,13 @@ class HitAnalysis(BaseAnalysis):
         if data is None:
             data = self.trigger_data
         return data[ak.any(data.RD53_hit_tot >= tot_threshold, axis=1)]
-    
 
-    def coincidence_filter_layer(self, data=None, layer=[]):
+    def coincidence_filter_layer(self, data=None, layer=None):
         """Filtra eventos por una o varias capas del detector."""
         self._analyzed = True
         return self._layer_filter(data=data, layer=layer)
-    
-    def _layer_filter(self, data=None, layer=[]):
+
+    def _layer_filter(self, data=None, layer=None):
         """Implementa el filtro de coincidencia por capa."""
         if data is None:
             data = self.trigger_data
@@ -222,34 +218,42 @@ class HitAnalysis(BaseAnalysis):
         Escribe en el log una línea por track con todos sus hits: coordenadas
         locales del chip (columna, fila), ToT y BX dentro de la ventana.
         """
+        hits = self.hits
+        # Conversión en bloque a listas de Python: acceder a awkward evento a
+        # evento es órdenes de magnitud más lento con muchos tracks.
+        events = ak.to_list(hits.event)
+        nhits_per_event = ak.to_list(hits.RD53_frame_event_nhits)
+        rows_per_event = ak.to_list(hits.RD53_hit_row)
+        cols_per_event = ak.to_list(hits.RD53_hit_col)
+        tots_per_event = ak.to_list(hits.RD53_hit_tot)
+        bxs_per_event = ak.to_list(hits.RD53_hit_bx)
 
+        log_track = self.logger.info
         plot_data = []
-
-        for n_track, event in enumerate(self.hits, start=1):
+        for n_track, (event, nhits_by_chip, ev_rows, ev_cols, ev_tots, ev_bxs) in enumerate(
+                zip(events, nhits_per_event, rows_per_event, cols_per_event,
+                    tots_per_event, bxs_per_event), start=1):
             event_dict = {}
             hit_index = 0
             log_parts = []
 
-            for i, (hybrid_id, chip_lane) in enumerate(self.active_chips):
-                nhits = int(event.RD53_frame_event_nhits[i])
-
+            for (hybrid_id, chip_lane), nhits in zip(self.active_chips, nhits_by_chip):
                 if nhits > 0:
-                    rows = ak.to_list(event.RD53_hit_row[hit_index:hit_index + nhits])
-                    cols = ak.to_list(event.RD53_hit_col[hit_index:hit_index + nhits])
-                    tots = ak.to_list(event.RD53_hit_tot[hit_index:hit_index + nhits])
-                    bxs = ak.to_list(event.RD53_hit_bx[hit_index:hit_index + nhits])
+                    end = hit_index + nhits
+                    rows = ev_rows[hit_index:end]
+                    cols = ev_cols[hit_index:end]
+                    tots = ev_tots[hit_index:end]
+                    bxs = ev_bxs[hit_index:end]
                     log_parts.append(f"H{hybrid_id}·{chip_lane} " + ", ".join(
                         f"({c}, {r}) ToT {t} BX {b}" for r, c, t, b in zip(rows, cols, tots, bxs)))
 
                     max_idx = tots.index(max(tots))
-                    row, col = to_global(hybrid_id, chip_lane,
-                                         rows[max_idx], cols[max_idx])
-
+                    row, col = to_global(hybrid_id, chip_lane, rows[max_idx], cols[max_idx])
                     event_dict[(hybrid_id, chip_lane)] = (row, col, int(tots[max_idx]))
 
                 hit_index += nhits
 
-            self.logger.info("Track %d (event %d): %s", n_track, event.event, " | ".join(log_parts))
+            log_track("Track %d (event %d): %s", n_track, event, " | ".join(log_parts))
             plot_data.append(event_dict)
 
         return plot_data

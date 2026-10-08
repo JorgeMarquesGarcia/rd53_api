@@ -1,12 +1,15 @@
+"""Plotter de SCurves.
+
+Posible mejora futura: añadir la conversión a electrones en esta gráfica.
+"""
 from __future__ import annotations
 import numpy as np
 from matplotlib.axes import Axes
 from src.plotter.plotter_base import PlotterBase
 import logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-"""Seria interesante añadir la conversion a electrones en esta gráfica."""
+
 class SCurvePlotter(PlotterBase):
     """Plotter para el histograma SCurves del chip RD53A.
 
@@ -22,39 +25,35 @@ class SCurvePlotter(PlotterBase):
     plot_key = "SCurves"
 
     def _extract(self) -> dict:
-        self.logger.info("[SCurves] Iniciando extracción de datos")
+        self.logger.info(f"[{self.plot_key}] Iniciando extracción de datos")
         try:
-            self.logger.info("[SCurves] Abriendo canvas ROOT...")
+            self.logger.info(f"[{self.plot_key}] Abriendo canvas ROOT...")
             f, canvas = self._open_canvas()
-            self.logger.debug("[SCurves] Canvas abierto exitosamente")
+            self.logger.debug(f"[{self.plot_key}] Canvas abierto exitosamente")
             
-            self.logger.debug("[SCurves] Buscando primitiva TH2...")
+            self.logger.debug(f"[{self.plot_key}] Buscando primitiva TH2...")
             h = self._get_primitive(canvas, "TH2")
             if h is None:
-                self.logger.error(f"[SCurves] No se encontró TH2 en el canvas '{self.canvas_path}'")
+                self.logger.error(f"[{self.plot_key}] No se encontró TH2 en el canvas '{self.canvas_path}'")
                 f.Close()
                 raise ValueError(f"No se encontró TH2 en el canvas '{self.canvas_path}'")
             
-            self.logger.debug(f"[SCurves] TH2 encontrado: {h.GetName()} ({h.GetNbinsX()}x{h.GetNbinsY()} bins)")
+            self.logger.debug(f"[{self.plot_key}] TH2 encontrado: {h.GetName()} ({h.GetNbinsX()}x{h.GetNbinsY()} bins)")
 
             data = self._th2_to_dict(h)
             nx = len(data["xedges"]) - 1
 
-            self.logger.debug(f"[SCurves] Calculando perfil para {nx} bins...")
-            centers_y     = (data["yedges"][:-1] + data["yedges"][1:]) / 2
-            profile_mean  = np.zeros(nx)
-            profile_sigma = np.zeros(nx)
-            profile_valid = np.zeros(nx, dtype=bool)
+            self.logger.debug(f"[{self.plot_key}] Calculando perfil para {nx} bins...")
+            centers_y = (data["yedges"][:-1] + data["yedges"][1:]) / 2
 
-            for i in range(nx):
-                col   = data["values"][i]
-                total = col.sum()
-                if total > 0:
-                    mean  = np.average(centers_y, weights=col)
-                    var   = np.average((centers_y - mean) ** 2, weights=col)
-                    profile_mean[i]  = mean
-                    profile_sigma[i] = np.sqrt(var)
-                    profile_valid[i] = True
+            # Media y sigma ponderadas de cada columna (ΔVCal), todas a la vez
+            weights       = data["values"]                       # (nx, ny)
+            totals        = weights.sum(axis=1)
+            profile_valid = totals > 0
+            safe_totals   = np.where(profile_valid, totals, 1.0)
+            profile_mean  = np.where(profile_valid, weights @ centers_y / safe_totals, 0.0)
+            variance      = (weights * (centers_y[None, :] - profile_mean[:, None]) ** 2).sum(axis=1) / safe_totals
+            profile_sigma = np.where(profile_valid, np.sqrt(np.maximum(variance, 0.0)), 0.0)
 
             data["centers_x"]     = (data["xedges"][:-1] + data["xedges"][1:]) / 2
             data["profile_mean"]  = profile_mean
@@ -63,18 +62,18 @@ class SCurvePlotter(PlotterBase):
 
             n_valid = profile_valid.sum()
             if n_valid == 0:
-                self.logger.warning("[SCurves] No hay puntos válidos en el perfil")
+                self.logger.warning(f"[{self.plot_key}] No hay puntos válidos en el perfil")
             else:
                 mean_mu = profile_mean[profile_valid].mean()
                 mean_sigma = profile_sigma[profile_valid].mean()
-                self.logger.info(f"[SCurves] Perfil calculado: {n_valid}/{nx} bins válidos. "
+                self.logger.info(f"[{self.plot_key}] Perfil calculado: {n_valid}/{nx} bins válidos. "
                                 f"μ_medio={mean_mu:.4f}  σ_medio={mean_sigma:.4f}")
             
             f.Close()
-            self.logger.info("[SCurves] Extracción completada exitosamente")
+            self.logger.info(f"[{self.plot_key}] Extracción completada exitosamente")
             return data
         except Exception as e:
-            self.logger.exception(f"[SCurves] Error durante la extracción de datos: {e}")
+            self.logger.exception(f"[{self.plot_key}] Error durante la extracción de datos: {e}")
             raise
 
     def _draw(self, ax: Axes, data: dict) -> None:

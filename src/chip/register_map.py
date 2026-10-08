@@ -25,7 +25,7 @@ class ChipSettings(Enum):
     LATENCY = "LATENCY_CONFIG"
     CLK_DATA_DELAY = "CLK_DATA_DELAY"
     CAL_FINE_DELAY = "CAL_EDGE_FINE_DELAY"
-    V_TRIM_DIG = "VOLTAGE_TRIM_DIGITAL"
+    V_TRIM_DIG = "VOLTAGE_TRIM_DIG"
     V_TRIM_ANALOG = "VOLTAGE_TRIM_ANA"
     
 
@@ -45,9 +45,9 @@ class CalibrationSettings(Enum):
     COL_STOP = "COLstop"
     LAT_START = "LatencyStart"
     LAT_STOP = "LatencyStop"
-    VCAL_START = "VCALHstart"
-    VCAL_STOP = "VCALHstop"
-    VCAL_STEP = "VCALHnsteps"
+    VCAL_START = "VCalHstart"
+    VCAL_STOP = "VCalHstop"
+    VCAL_STEP = "VCalHnsteps"   # número de pasos del barrido
     VCAL_MED = "VCalMED"
     T_OCCUPANCY = "TargetOcc"
     OCC_PP = "OccPerPixel"
@@ -58,6 +58,9 @@ class CalibrationSettings(Enum):
     THR_START = "ThrStart"
     THR_STOP = "ThrStop"
     THR_TARGET = "TargetThr"
+    TARGET_CHARGE = "TargetCharge"
+    KRUM_START = "KrumCurrStart"
+    KRUM_STOP = "KrumCurrStop"
 
     def __str__(self) -> str:
         return self.value

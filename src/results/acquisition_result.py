@@ -7,13 +7,11 @@ fields: the list of chips involved and the user-configured scan time.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from datetime import datetime
 
-from scan_result import ScanResult
+from src.results.scan_result import ScanResult
 
 
-@dataclass(slots=True)
+@dataclass
 class AcquisitionResult(ScanResult):
     """Outcome of a timed acquisition scan over one or more RD53A chips.
 

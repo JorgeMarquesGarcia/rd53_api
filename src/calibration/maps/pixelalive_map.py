@@ -46,24 +46,6 @@ class PixelAliveMap(BaseCalibrationMap):
             raise ValueError("Reset mask must be 0 or 1.")
         self._resetmask = value
 
-    @property
-    def update(self) -> int:
-        return self._update
-    @update.setter
-    def update(self, value: int) -> None:
-        if value not in (0, 1):
-            raise ValueError("Update must be 0 (no) or 1 (yes).")
-        self._update = value
-
-    @property
-    def latency(self) -> int:
-        return self._latency
-    @latency.setter
-    def latency(self, value: int) -> None:
-        if value < 0 or value > 255:
-            raise ValueError("Latency out of range 8 bits.")
-        self._latency = value
-    
     def to_dict(self) -> dict[Union[ChipSettings, CalibrationSettings, FastCmdReg], Value]:
         return {
             CalibrationSettings.N_EVENTS: self._nevents,

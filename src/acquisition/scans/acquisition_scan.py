@@ -1,43 +1,48 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Callable
+import logging
 import re
 import shlex
-from src.remote.terminal import Terminal
+
+from src.remote.terminal import Terminal, ANSI_ESCAPE_PATTERN
 from src.acquisition.maps import AcquisitionMap
 from src.chip.register_map import CalibrationSettings, ChipSettings, FastCmdReg, Value
 from src.config.system_config import SystemConfig
-import logging
+from src.core import num_manager
+
 logger = logging.getLogger(__name__)
 
 # Línea con la que CMSITminiDAQ anuncia el .raw que está escribiendo,
 # p. ej. "Saving binary data into: Results/Run000298_Physics_Board000.raw"
 RAW_FILE_PATTERN = re.compile(r"Saving binary data into:\s*(\S+\.raw)")
-# Códigos de color ANSI que Ph2_ACF mete en sus logs (p. ej. "\033[1m\033[33m")
-ANSI_ESCAPE_PATTERN = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class AcquisitionScan(ABC):
-    def __init__(self, chips: list[tuple], timeout: int = 60, scan_time: int = 60):
+    def __init__(self, chips: list[tuple[int, int]], timeout: int | None = 60, scan_time: int = 60):
         """
         Args:
             chips: lista de (hybrid_id, rd53_id) a habilitar.
-            timeout: timeout global del proceso DAQ.
+            timeout: espera máxima (s) a que el DAQ termine tras cerrar su
+                     salida (ver Terminal.run_scan); None = sin límite.
             scan_time: duración del scan en segundos (-1 sin límite).
         """
-        self.chips = chips
+        self.chips = list(chips)
         self.timeout = timeout
         self.scan_time = scan_time
         self.last_scan_end_pattern = None
         self.raw_path: Path | None = None   # .raw que escribe el DAQ (leído de su salida)
 
-        sys_config = SystemConfig()
-        self.ph2_acf_dir = str(sys_config.get_ph2_acf_dir())
-        self.xml = sys_config.create_xml_manager()
-        self.txt_dir = str(sys_config.get_txt_base_dir())
-        from src.core import num_manager
+        self.ph2_acf_dir = str(SystemConfig.get_ph2_acf_dir())
+        self.xml = SystemConfig.create_xml_manager()
+        self.txt_dir = str(SystemConfig.get_txt_base_dir())
         num_manager.configure(Path(self.txt_dir) / "RunNumber.txt")
 
+        # Callbacks opcionales (los asigna la GUI): cada línea del DAQ y el .raw anunciado
+        self._line_callback: Callable[[str], None] | None = None
+        self._raw_file_callback: Callable[[Path], None] | None = None
+        self._terminal: Terminal | None = None
 
     @abstractmethod
     def get_map(self):
@@ -57,47 +62,41 @@ class AcquisitionScan(ABC):
             raise ValueError(f"Unsupported setting type: {type(setting)}")
 
     def _acq_setup_xml(self):
-        acp_map = AcquisitionMap()
-        self._apply_map(acp_map.to_dict())
-        
+        self._apply_map(AcquisitionMap().to_dict())
         for hybrid_id, rd53_id in self.chips:
             self.xml.set_chip_enable(hybrid_id, rd53_id, True)
-        self.xml.save()
 
-    
     def _setup_xml(self):
         self._acq_setup_xml()
         self._apply_map(self.get_map().to_dict())
-        self.xml.save()
 
     def _apply_map(self, settings: dict, hybrid_id: int | None = None, rd53_id: int | None = None):
         """Aplica un diccionario de settings al XML, manejando los tres tipos."""
         for key, value in settings.items():
             try:
-                if isinstance(key, CalibrationSettings):
-                    self._apply_setting(key, value)
-                elif isinstance(key, FastCmdReg):
-                    self._apply_setting(key, value)
-                elif isinstance(key, ChipSettings):
-                    if hybrid_id is not None and rd53_id is not None:
-                        self._apply_setting(key, value, hybrid_id, rd53_id)
-                    else:
-                        # ChipSettings sin chip especificado → aplicar a todos los chips activos
-                        for h, r in self.chips:
-                            self._apply_setting(key, value, h, r)
+                if isinstance(key, ChipSettings) and (hybrid_id is None or rd53_id is None):
+                    # ChipSettings sin chip especificado → aplicar a todos los chips activos
+                    for h, r in self.chips:
+                        self._apply_setting(key, value, h, r)
+                else:
+                    self._apply_setting(key, value, hybrid_id, rd53_id)
             except Exception as e:
-                self.xml.logger.warning(
-                    f"Failed to set '{key}' to '{value}': {str(e)}"
-                )
-                
+                self.xml.logger.warning("Failed to set '%s' to '%s': %s", key, value, e)
+
+    def _build_command(self) -> str:
+        return (f"CMSITminiDAQ -f {shlex.quote(str(self.xml.get_path()))} "
+                f"-c physics -t {self.scan_time}")
+
     def run(self):
-        self._setup_xml()
+        # Todos los cambios del XML en una única escritura
+        with self.xml.batch():
+            self._setup_xml()
         self.last_scan_end_pattern = None
         self.raw_path = None
         self._terminal = None
 
-        line_cb = getattr(self, '_line_callback', None)
-        raw_file_cb = getattr(self, '_raw_file_callback', None)
+        line_cb = self._line_callback
+        raw_file_cb = self._raw_file_callback
 
         def _on_line(line: str):
             if self.raw_path is None:
@@ -111,7 +110,8 @@ class AcquisitionScan(ABC):
             if line_cb:
                 line_cb(line)
 
-        cmd = f"CMSITminiDAQ -f {self.xml.get_path()} -c physics -t {self.scan_time}"
+        cmd = self._build_command()
+        logger.info("Acquisition: %s (cwd=%s)", cmd, self.txt_dir)
 
         with Terminal(timeout=self.timeout, line_callback=_on_line) as term:
             self._terminal = term
@@ -119,15 +119,20 @@ class AcquisitionScan(ABC):
             self.last_scan_end_pattern = matched_pattern
 
         return output
-    
-    @staticmethod
-    def run_raw2root(xml_path, results_dir, cwd=None, timeout: int = 180,
-                     line_callback=None, raw_path=None) -> tuple[str, Path]:
-        from src.core import num_manager
 
+    @staticmethod
+    def run_raw2root(xml_path, results_dir=None, cwd=None, timeout: int = 180,
+                     line_callback=None, raw_path=None) -> tuple[str, Path]:
+        """Convierte un .raw a .root con CMSITminiDAQ -b.
+
+        raw_path: el .raw a convertir. Si es None se deduce del RunNumber.txt:
+        <results_dir>/Run<RunNumber-1>_Physics_Board000.raw.
+        """
         cwd = Path(cwd) if cwd is not None else SystemConfig.get_txt_base_dir()
 
         if raw_path is None:
+            if results_dir is None:
+                raise ValueError("raw2root: raw_path or results_dir is required")
             run_str = str(num_manager.get() - 1).zfill(6)
             binary_path = Path(results_dir) / f"Run{run_str}_Physics_Board000.raw"
         else:
@@ -176,11 +181,11 @@ class AcquisitionScan(ABC):
         Si send_enter() falla (proceso ya muerto, stdin no disponible) cae
         a SIGINT como último recurso.
         """
-        if hasattr(self, '_terminal') and self._terminal:
-            sent = self._terminal.send_enter()
-            if not sent:
-                self._terminal.kill()
+        term = self._terminal
+        if term is not None and not term.send_enter():
+            term.kill()
 
     def abort(self):
-        if hasattr(self, '_terminal') and self._terminal:
-            self._terminal.kill()
+        term = self._terminal
+        if term is not None:
+            term.kill()

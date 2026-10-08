@@ -75,6 +75,11 @@ class CoincidencePlotter:
         y = np.array(y_coords, dtype=float)
         z = np.array(z_coords, dtype=float)
 
+        if len(set(z_coords)) < 2:
+            # Todos los hits en el mismo plano: el ajuste en Z no está definido
+            print(f"⚠️  {event_label or 'Evento'}: hits en un único plano, insuficiente para trazar")
+            return
+
         try:
             x_poly = np.poly1d(np.polyfit(z, x, 1))
             y_poly = np.poly1d(np.polyfit(z, y, 1))

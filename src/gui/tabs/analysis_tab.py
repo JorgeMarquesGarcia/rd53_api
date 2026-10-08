@@ -14,8 +14,8 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
-    QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget, QTabBar, QToolButton,
-    QListWidget, QListWidgetItem, QTextEdit, QSpinBox,
+    QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget,
+    QListWidget, QListWidgetItem, QSpinBox,
     QFileDialog, QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal
@@ -25,15 +25,20 @@ from src.core.results_finder import (
     latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
 )
+from src.gui.gui_utils import append_log, install_tab_close_button, make_log_view
 from src.gui.tabs.acquisition_tab import Raw2RootWorker, HitAnalysisWorker
 from src.gui.trajectory_view import TrajectoryView
 from src.gui.noise_mask_view import NoiseMaskView
+from src.gui.energy_view import EnergyView
 from src.plotter.calibration_view import discover_chips, build_chip_plots_widget
 
 MODE_CALIBRATION = 0
 MODE_ACQUISITION = 1
 
 N_RECENT = 3
+
+# Ficheros de Ph2_ACF con el ajuste del Gain scan (la GainOptimization lo incluye)
+GAIN_FILE_PATTERNS = ("_Gain.root", "_GainOptimization.root")
 
 _SEGMENT_QSS = (
     "QPushButton { padding: 6px 18px; }"
@@ -98,14 +103,53 @@ class NoiseAnalysisWorker(QObject):
     def run(self):
         try:
             from src.analysis.analysis_noise import NoiseAnalysis
+            from src.analysis.analysis_base import REQUIRED_COLUMNS
 
-            root_manager = SystemConfig.create_root_manager(path=self._root_path)
+            # Solo las ramas que usa el análisis: carga más rápida y con menos memoria
+            root_manager = SystemConfig.create_root_manager(path=self._root_path,
+                                                            branches=REQUIRED_COLUMNS)
             root_manager.load(self._root_path)
             with forward_analysis_logs(self.log_message.emit, "NOISE"):
                 analysis = NoiseAnalysis(root_manager, min_repeats=self._min_repeats)
             self.analysed.emit(self._root_path, analysis.noisy_pixel_counts, analysis.stats)
         except Exception as e:
             self.log_message.emit(f"[NOISE ERROR] {Path(self._root_path).name}: {e}")
+        finally:
+            self.finished.emit()
+
+
+class EnergyAnalysisWorker(QObject):
+    """Carga un .root, ejecuta NoiseAnalysis y HitAnalysis y calcula la energía de
+    cada cluster con la calibración del Gain scan (leída antes en el hilo de la GUI:
+    PyROOT solo se usa ahí)."""
+    log_message = pyqtSignal(str)
+    analysed    = pyqtSignal(str, str, object, object)   # (root_path, gain_path, clusters, stats)
+    finished    = pyqtSignal()
+
+    def __init__(self, root_path: str, calibration, min_repeats: int):
+        super().__init__()
+        self._root_path = root_path
+        self._calibration = calibration
+        self._min_repeats = min_repeats
+
+    def run(self):
+        try:
+            from src.analysis.analysis_energy import EnergyAnalysis
+            from src.analysis.analysis_hit import HitAnalysis
+            from src.analysis.analysis_noise import NoiseAnalysis
+            from src.analysis.analysis_base import REQUIRED_COLUMNS
+
+            root_manager = SystemConfig.create_root_manager(path=self._root_path,
+                                                            branches=REQUIRED_COLUMNS)
+            root_manager.load(self._root_path)
+            noise = NoiseAnalysis(root_manager, min_repeats=self._min_repeats)
+            hits = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
+            with forward_analysis_logs(self.log_message.emit, "ENERGY"):
+                analysis = EnergyAnalysis(hits, self._calibration)
+            self.analysed.emit(self._root_path, self._calibration.source,
+                               analysis.clusters, analysis.stats)
+        except Exception as e:
+            self.log_message.emit(f"[ENERGY ERROR] {Path(self._root_path).name}: {e}")
         finally:
             self.finished.emit()
 
@@ -129,6 +173,10 @@ class AnalysisTab(QWidget):
         self._hit_worker: HitAnalysisWorker | None = None
         self._noise_thread: QThread | None = None
         self._noise_worker: NoiseAnalysisWorker | None = None
+        self._energy_thread: QThread | None = None
+        self._energy_worker: EnergyAnalysisWorker | None = None
+        self._gain_file: Path | None = None
+        self._gain_manual = False   # True si el usuario eligió el Gain scan con Browse
 
         self._build_ui()
         self._refresh_recent()
@@ -320,6 +368,27 @@ class AnalysisTab(QWidget):
         self._btn_noise.setVisible(False)
         layout.addWidget(self._btn_noise)
 
+        # --- Energía depositada: calibración del Gain scan ---
+        self._gain_group = QGroupBox("GAIN CALIBRATION (Gain scan .root)")
+        gain_layout = QHBoxLayout(self._gain_group)
+        self._gain_edit = QLineEdit()
+        self._gain_edit.setReadOnly(True)
+        self._gain_edit.setPlaceholderText("No Gain scan file in Results")
+        gain_layout.addWidget(self._gain_edit, 1)
+        gain_browse = QPushButton("Browse...")
+        gain_browse.clicked.connect(self._browse_gain_file)
+        gain_layout.addWidget(gain_browse)
+        self._gain_group.setVisible(False)
+        layout.addWidget(self._gain_group)
+
+        self._btn_energy = QPushButton("ENERGY ANALYSIS")
+        self._btn_energy.setObjectName("btn_launch")
+        self._btn_energy.setToolTip(
+            "Deposited energy per cluster, from the hit ToT and the per-pixel Gain scan fit")
+        self._btn_energy.clicked.connect(self._run_energy_analysis)
+        self._btn_energy.setVisible(False)
+        layout.addWidget(self._btn_energy)
+
         layout.addStretch(1)
         return panel
 
@@ -339,9 +408,7 @@ class AnalysisTab(QWidget):
         header.addWidget(clear_btn)
         layout.addLayout(header)
 
-        self._log = QTextEdit()
-        self._log.setReadOnly(True)
-        self._log.setPlaceholderText("Analysis output will appear here...")
+        self._log = make_log_view("Analysis output will appear here...")
         layout.addWidget(self._log)
         return panel
 
@@ -410,6 +477,8 @@ class AnalysisTab(QWidget):
         self._btn_noise.setVisible(not is_cal)
         self._noise_repeats_row.setVisible(not is_cal)
         self._chk_animate.setVisible(not is_cal)
+        self._gain_group.setVisible(not is_cal)
+        self._btn_energy.setVisible(not is_cal)
 
         # Cambiar de modo invalida la selección anterior
         self._set_selected_file(None)
@@ -597,13 +666,93 @@ class AnalysisTab(QWidget):
         self._noise_worker = None
         self._btn_noise.setEnabled(True)
 
+    # ==================================================================
+    # ENERGY ANALYSIS (modo Acquisition)
+    # ==================================================================
+    def _browse_gain_file(self):
+        start_dir = self._gain_file.parent if self._gain_file else self._results_dir()
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Gain scan file",
+            str(start_dir) if start_dir else "",
+            "Gain scan files (*Gain*.root);;ROOT files (*.root)",
+        )
+        if not path:
+            return
+        self._set_gain_file(Path(path), manual=True)
+        self._log_write(f"[INFO] Gain calibration: {Path(path).name}")
+
+    def _set_gain_file(self, path: Path | None, manual: bool = False):
+        self._gain_file = path
+        self._gain_manual = manual and path is not None
+        self._gain_edit.setText(str(path) if path else "")
+        self._gain_edit.setToolTip(str(path) if path else "")
+
+    def _refresh_gain_file(self, results_dir: Path | None):
+        """Propone el Gain scan más reciente de Results, salvo que el usuario haya elegido otro."""
+        if self._gain_manual and self._gain_file is not None and self._gain_file.exists():
+            return
+        latest = (latest_files(results_dir, extensions=(ROOT_EXT,),
+                               name_patterns=GAIN_FILE_PATTERNS, n=1)
+                  if results_dir is not None else [])
+        self._set_gain_file(latest[0] if latest else None)
+
+    def _run_energy_analysis(self):
+        path = self._selected_file
+        if path is None or path.suffix.lower() != ROOT_EXT:
+            self._log_write("[WARN] Select a .root file to run the energy analysis.")
+            return
+        if self._gain_file is None:
+            self._log_write("[WARN] Select the Gain scan .root file in GAIN CALIBRATION.")
+            return
+        if self._energy_thread is not None and self._energy_thread.isRunning():
+            self._log_write("[WARN] An energy analysis is already running.")
+            return
+
+        # PyROOT solo en el hilo de la GUI, como los plots de calibración
+        from src.analysis.gain_calibration import load_gain_calibration
+        self._log_write(f"[INFO] Reading gain calibration from {self._gain_file.name}...")
+        try:
+            with self._busy(), forward_analysis_logs(self._log_write, "GAIN"):
+                calibration = load_gain_calibration(self._gain_file)
+        except Exception as e:
+            self._log_write(f"[ERROR] Cannot read the gain calibration {self._gain_file.name}: {e}")
+            return
+
+        worker = EnergyAnalysisWorker(str(path), calibration, self._spin_repeats.value())
+        self._energy_worker = worker
+        self._btn_energy.setEnabled(False)
+        self._log_write(f"[START] Running EnergyAnalysis on {path.name}...")
+        self._energy_thread = QThread(self)
+        worker.moveToThread(self._energy_thread)
+        self._energy_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.analysed.connect(self._on_energy_analysed)
+        worker.finished.connect(self._energy_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        self._energy_thread.finished.connect(self._on_energy_thread_finished)
+        self._energy_thread.finished.connect(self._energy_thread.deleteLater)
+        self._energy_thread.start()
+
+    def _on_energy_analysed(self, root_path: str, gain_path: str, clusters: dict, stats: dict):
+        path = Path(root_path)
+        n = len(clusters["energy_kev"])
+        self._log_write(f"[OK]   EnergyAnalysis complete: {n} clusters.")
+        if n == 0:
+            self._log_write(f"[WARN] No clusters with energy in {path.name}.")
+            return
+
+        view = EnergyView(path, Path(gain_path), clusters, stats)
+        view.log_message.connect(self._log_write)
+        self._add_result_tab(path, view, kind="energy")
+
+    def _on_energy_thread_finished(self):
+        self._energy_thread = None
+        self._energy_worker = None
+        self._btn_energy.setEnabled(True)
+
     def _save_trajectories(self, view: TrajectoryView):
         try:
-            try:
-                output_dir = SystemConfig.get_root_path().parent / "plots"
-            except Exception:
-                output_dir = None
-            saved = view.save(output_dir)
+            saved = view.save(SystemConfig.get_plots_dir())
             self._log_write(f"[OK]   Plot saved: {saved}")
         except Exception as e:
             self._log_write(f"[ERROR] Cannot save plot: {e}")
@@ -615,6 +764,7 @@ class AnalysisTab(QWidget):
     def _refresh_recent(self):
         self._recent_list.clear()
         results_dir = self._results_dir()
+        self._refresh_gain_file(results_dir)
 
         if results_dir is None:
             self._recent_label.setText("Set 'ROOT output directory' in Config tab.")
@@ -789,26 +939,11 @@ class AnalysisTab(QWidget):
 
         title = f"{path.stem} · {kind}" if kind else path.stem
         idx = self._results_tabs.addTab(widget, title)
-        self._set_tab_close_button(self._results_tabs, idx)
+        install_tab_close_button(self._results_tabs, idx, self._close_result_tab)
         self._results_tabs.setTabToolTip(idx, str(path))
         self._results_tabs.setCurrentIndex(idx)
         self._file_tabs[key] = widget
         self._update_results_visibility()
-
-    def _set_tab_close_button(self, tabs: QTabWidget, index: int) -> None:
-        button = QToolButton(tabs)
-        button.setAutoRaise(True)
-        button.setCursor(Qt.ArrowCursor)
-        button.setToolTip("Close tab")
-        button.setIcon(tabs.style().standardIcon(tabs.style().SP_TitleBarCloseButton))
-        button.setStyleSheet(
-            "QToolButton { background: transparent; border: none; padding: 0px; }"
-            "QToolButton:hover { background: transparent; }"
-        )
-        # El índice cambia al cerrar otras pestañas: resolverlo en el clic
-        widget = tabs.widget(index)
-        button.clicked.connect(lambda *_: self._close_result_tab(tabs.indexOf(widget)))
-        tabs.tabBar().setTabButton(index, QTabBar.RightSide, button)
 
     def _close_result_tab(self, index: int):
         if index < 0:
@@ -831,8 +966,5 @@ class AnalysisTab(QWidget):
     # Helper log
     # ==================================================================
     def _log_write(self, msg: str):
-        self._log.append(msg)
-        self._log.verticalScrollBar().setValue(
-            self._log.verticalScrollBar().maximum()
-        )
+        append_log(self._log, msg)
         self.logger.info(msg)

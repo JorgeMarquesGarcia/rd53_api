@@ -24,6 +24,7 @@ from src.plotter.heatmap import (
 # Estos imports registran sus plotters en PLOTTER_REGISTRY
 from src.plotter import histogram1d as _histogram1d  # noqa: F401
 from src.plotter import scurve as _scurve            # noqa: F401
+from src.plotter import gain as _gain                # noqa: F401
 import ROOT
 
 from src.config.system_config import SystemConfig
@@ -41,6 +42,11 @@ CANVAS_NAMES = {
     "PixelAlive":      "D_B(0)_O(0)_H({h})_PixelAlive_Chip({c})",
     "ToT2D":           "D_B(0)_O(0)_H({h})_ToT2D_Chip({c})",
     "ToT1D":           "D_B(0)_O(0)_H({h})_ToT1D_Chip({c})",
+    "Gain":            "D_B(0)_O(0)_H({h})_Gain_Chip({c})",
+    "SlopeLowQ1D":     "D_B(0)_O(0)_H({h})_SlopeLowQ1D_Chip({c})",
+    "InterceptLowQ1D": "D_B(0)_O(0)_H({h})_InterceptLowQ1D_Chip({c})",
+    "Chi2DoF1D":       "D_B(0)_O(0)_H({h})_Chi2DoF1D_Chip({c})",
+    "KrumCurr":        "D_B(0)_O(0)_H({h})_KrumCurr_Chip({c})",
 }
 
 # Plotters que necesitan máscara de región activa (col_start / col_end)

@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QGroupBox, QLabel, QLineEdit, QPushButton,
     QCheckBox, QFileDialog, QMessageBox, QSplitter,
-    QScrollArea, QSpacerItem, QSizePolicy, QPlainTextEdit,
+    QSizePolicy, QPlainTextEdit,
     QComboBox, QListWidget, QListWidgetItem, QSpinBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -120,7 +120,7 @@ class ConfigTab(QWidget):
 
             if layer_info["single"]:
                 chip_widget, cb = self._build_chip_control(
-                    hybrid_id, 0, "Chip 0  (single sensor)"
+                    hybrid_id, 0 + offset, "Chip 0  (single sensor)"
                 )
                 cb.setChecked(True)
                 key = (hybrid_id, 0)
@@ -269,22 +269,30 @@ class ConfigTab(QWidget):
     # ------------------------------------------------------------------
     # Checkboxes "All": selección/deselección cruzada de chips
     # ------------------------------------------------------------------
+    def _set_chip_checked(self, key: tuple[int, int], checked: bool):
+        """Marca/desmarca un chip sin disparar sus señales, pero manteniendo
+        su spinbox de Vthreshold coherente (activo solo si el chip lo está)."""
+        cb = self._chip_checks[key]
+        if cb.isChecked() == checked:
+            return
+        cb.blockSignals(True)
+        cb.setChecked(checked)
+        cb.blockSignals(False)
+        hybrid_id, _chip_local = key
+        self._on_vthreshold_toggled((hybrid_id, self._chip_to_rd53[key]), checked)
+
     def _on_layer_all_toggled(self, hybrid_id: int, checked: bool):
         """Marca/desmarca todos los chips de un layer al pulsar su 'All'."""
-        for (h, _c), cb in self._chip_checks.items():
-            if h == hybrid_id:
-                cb.blockSignals(True)
-                cb.setChecked(checked)
-                cb.blockSignals(False)
+        for key in self._chip_checks:
+            if key[0] == hybrid_id:
+                self._set_chip_checked(key, checked)
         self._refresh_chip_txt_rows()
         self._update_master_all_check()
 
     def _on_master_all_toggled(self, checked: bool):
         """Marca/desmarca todos los chips del detector al pulsar el 'All' maestro."""
-        for cb in self._chip_checks.values():
-            cb.blockSignals(True)
-            cb.setChecked(checked)
-            cb.blockSignals(False)
+        for key in self._chip_checks:
+            self._set_chip_checked(key, checked)
         for all_cb in self._layer_all_checks.values():
             all_cb.blockSignals(True)
             all_cb.setChecked(checked)
@@ -642,74 +650,20 @@ class ConfigTab(QWidget):
 
             # 2. Abrir el XML, activar/desactivar chips, aplicar renombrados
             #    de configFile pendientes en la caja TXT, leer configFile y
-            #    comprobar existencia del .txt en disco.
+            #    comprobar existencia del .txt en disco. Todos los cambios se
+            #    escriben en el XML de una sola vez al salir del bloque batch().
             xml_mgr = SystemConfig.create_xml_manager(read_only=False)
             config_files: dict[tuple[int, int], str] = {}
             xml_log_lines: list[str] = []
 
-            for (hybrid_id, rd53_id), is_active in sorted(chip_selection.items()):
-                try:
-                    xml_mgr.set_chip_enable(hybrid_id, rd53_id, is_active)
-
-                    threshold_spin = self._vthreshold_spinboxes.get((hybrid_id, rd53_id))
-                    threshold_key = (hybrid_id, rd53_id)
-                    if (
-                        is_active
-                        and threshold_spin is not None
-                        and threshold_key in self._vthreshold_manual
-                    ):
-                        xml_mgr.set_chip_setting(
-                            hybrid_id,
-                            rd53_id,
-                            ChipSettings.VTHRESHOLD_LIN,
-                            threshold_spin.value(),
-                        )
-
-                    # Si el usuario ha escrito/elegido un nombre distinto en
-                    # la caja "CHIP TXT CONFIG FILES", lo persistimos en el XML.
-                    combo = self._txt_combo.get((hybrid_id, rd53_id))
-                    if combo is not None:
-                        new_name = combo.currentText().strip()
-                        if new_name:
-                            current_name = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
-                            if new_name != current_name:
-                                xml_mgr.set_chip_config_file(hybrid_id, rd53_id, new_name)
-
-                    fname = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
-
-                    if fname:
-                        config_files[(hybrid_id, rd53_id)] = fname
-
-                    # Símbolo de existencia del fichero .txt en disco:
-                    #   ✓  existe   ✗  no existe   –  no hay txt_base_dir
-                    if not fname:
-                        file_symbol = "–"
-                    elif txt_base is None:
-                        file_symbol = "–"
-                    elif (txt_base / fname).exists():
-                        file_symbol = "✓"
-                    else:
-                        file_symbol = "✗"
-
-                    status = "ON" if is_active else "OFF"
-                    xml_log_lines.append(
-                        f"H{hybrid_id} Chip{rd53_id:>2}    [{status}]"
-                        f"   {fname or '(no configFile)':<28}"
-                        f"   {file_symbol}"
-                    )
-                except Exception as chip_err:
-                    # El chip puede no existir en este XML (slot vacío)
-                    self.logger.warning(
-                        "Hybrid %d / RD53A %d no encontrado en el XML: %s",
-                        hybrid_id, rd53_id, chip_err,
-                    )
+            with xml_mgr.batch():
+                self._apply_chips_to_xml(xml_mgr, chip_selection, txt_base,
+                                         config_files, xml_log_lines)
 
             # 3. Persistir el mapa de configFiles en el singleton
             #    (genera un INFO por chip en el logger de Python)
             SystemConfig.set_chip_config_files(config_files)
-
-            if plots:
-                Path(plots).mkdir(parents=True, exist_ok=True)
+            SystemConfig.set_plots_dir(plots or None)
 
             self._update_summary(ph2_acf, xml, col_start, col_end, xml_log_lines)
             self._refresh_txt_file_list()
@@ -724,6 +678,73 @@ class ConfigTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Configuration Error", str(e))
             self.logger.error("Error aplicando configuración: %s", e)
+
+    def _apply_chips_to_xml(
+        self,
+        xml_mgr: XmlManager,
+        chip_selection: dict[tuple[int, int], bool],
+        txt_base: Path | None,
+        config_files: dict[tuple[int, int], str],
+        xml_log_lines: list[str],
+    ) -> None:
+        """Activa/desactiva cada chip en el XML, aplica Vthreshold y configFile
+        y rellena config_files y las líneas del resumen."""
+        for (hybrid_id, rd53_id), is_active in sorted(chip_selection.items()):
+            try:
+                xml_mgr.set_chip_enable(hybrid_id, rd53_id, is_active)
+
+                threshold_spin = self._vthreshold_spinboxes.get((hybrid_id, rd53_id))
+                threshold_key = (hybrid_id, rd53_id)
+                if (
+                    is_active
+                    and threshold_spin is not None
+                    and threshold_key in self._vthreshold_manual
+                ):
+                    xml_mgr.set_chip_setting(
+                        hybrid_id,
+                        rd53_id,
+                        ChipSettings.VTHRESHOLD_LIN,
+                        threshold_spin.value(),
+                    )
+
+                # Si el usuario ha escrito/elegido un nombre distinto en
+                # la caja "CHIP TXT CONFIG FILES", lo persistimos en el XML.
+                combo = self._txt_combo.get((hybrid_id, rd53_id))
+                if combo is not None:
+                    new_name = combo.currentText().strip()
+                    if new_name:
+                        current_name = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
+                        if new_name != current_name:
+                            xml_mgr.set_chip_config_file(hybrid_id, rd53_id, new_name)
+
+                fname = xml_mgr.get_chip_config_file(hybrid_id, rd53_id) or ""
+
+                if fname:
+                    config_files[(hybrid_id, rd53_id)] = fname
+
+                # Símbolo de existencia del fichero .txt en disco:
+                #   ✓  existe   ✗  no existe   –  no hay txt_base_dir
+                if not fname:
+                    file_symbol = "–"
+                elif txt_base is None:
+                    file_symbol = "–"
+                elif (txt_base / fname).exists():
+                    file_symbol = "✓"
+                else:
+                    file_symbol = "✗"
+
+                status = "ON" if is_active else "OFF"
+                xml_log_lines.append(
+                    f"H{hybrid_id} Chip{rd53_id:>2}    [{status}]"
+                    f"   {fname or '(no configFile)':<28}"
+                    f"   {file_symbol}"
+                )
+            except Exception as chip_err:
+                # El chip puede no existir en este XML (slot vacío)
+                self.logger.warning(
+                    "Hybrid %d / RD53A %d no encontrado en el XML: %s",
+                    hybrid_id, rd53_id, chip_err,
+                )
 
     def _update_summary(
         self,
