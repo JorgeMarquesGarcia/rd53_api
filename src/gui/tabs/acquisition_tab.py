@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QObject
 
+from src.acquisition.maps.acquisition_map import LATENCY_MAX, NTRIGGERS_MAX
 from src.chip.detector_geometry import DETECTOR_LAYOUT
 from src.config.system_config import SystemConfig
 from src.config.acquisition_config import AcquisitionConfig
@@ -76,18 +77,23 @@ class TimedAcquisitionWorker(QObject):
 
     def __init__(self, chips: list[tuple[int, int]], scan_time: int,
                  triggers: int = 0,
-                 vthresh_per_chip: dict[tuple[int, int], int] | None = None):
+                 vthresh_per_chip: dict[tuple[int, int], int] | None = None,
+                 latency: int | None = None,
+                 ntriggers: int | None = None):
         super().__init__()
         self._chips            = chips
         self._scan_time        = scan_time
         self._triggers         = triggers
         self._vthresh_per_chip = vthresh_per_chip or {}
+        self._latency          = latency
+        self._ntriggers        = ntriggers
         self._scan             = None
 
     def run(self):
         self.log_message.emit(
             f"[START] Physics scan  chips={self._chips}  time={self._scan_time}s  "
-            f"triggers={self._triggers}  vthresh={self._vthresh_per_chip}"
+            f"triggers={self._triggers}  latency={self._latency}  nTRIGxEvent={self._ntriggers}  "
+            f"vthresh={self._vthresh_per_chip}"
         )
         success = False
         try:
@@ -99,6 +105,8 @@ class TimedAcquisitionWorker(QObject):
                 timeout=max(self._scan_time * 2, self._scan_time + 120),
                 triggers=self._triggers,
                 vthresh_per_chip=self._vthresh_per_chip,
+                latency=self._latency,
+                ntriggers=self._ntriggers,
             )
             self._scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
             self._scan.run()
@@ -274,11 +282,15 @@ class StandaloneAcquisitionWorker(QObject):
         triggers: int = 0,
         vthresh_per_chip: dict[tuple[int, int], int] | None = None,
         raw_size_limit: int = RAW_SIZE_LIMIT_BYTES,
+        latency: int | None = None,
+        ntriggers: int | None = None,
     ):
         super().__init__()
         self._chips            = chips
         self._triggers         = triggers
         self._vthresh_per_chip = vthresh_per_chip or {}
+        self._latency          = latency
+        self._ntriggers        = ntriggers
         self._raw_size_limit   = raw_size_limit
         self._stop_flag        = False   # STOP: parada limpia, se convierte el último tramo
         self._abort_flag       = False   # ABORT: parada inmediata, no se convierte nada
@@ -315,7 +327,8 @@ class StandaloneAcquisitionWorker(QObject):
     def run(self):
         self._dbg(
             f"Standalone start | chips={self._chips} "
-            f"triggers={self._triggers} vthresh={self._vthresh_per_chip} "
+            f"triggers={self._triggers} latency={self._latency} nTRIGxEvent={self._ntriggers} "
+            f"vthresh={self._vthresh_per_chip} "
             f"size_limit={self._raw_size_limit // 1024**2} MB"
         )
 
@@ -400,6 +413,8 @@ class StandaloneAcquisitionWorker(QObject):
                 timeout=None,
                 triggers=self._triggers,
                 vthresh_per_chip=self._vthresh_per_chip,
+                latency=self._latency,
+                ntriggers=self._ntriggers,
             )
             self._current_scan = scan
             scan._line_callback = lambda line: self.log_message.emit(f"[DAQ] {line}")
@@ -851,6 +866,8 @@ class AcquisitionTab(QWidget):
             scan_time=self._scan_time.value(),
             triggers=self._spin_triggers.value(),
             vthresh_per_chip={k: s.value() for k, s in self._vthresh_spinboxes.items()},
+            latency=self._spin_latency.value(),
+            ntriggers=self._spin_ntrig.value(),
         )
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
@@ -892,6 +909,8 @@ class AcquisitionTab(QWidget):
             chips=chips,
             triggers=self._spin_triggers.value(),
             vthresh_per_chip=vthresh,
+            latency=self._spin_latency.value(),
+            ntriggers=self._spin_ntrig.value(),
         )
         self._standalone_thread = QThread()
         self._standalone_worker.moveToThread(self._standalone_thread)
@@ -1146,6 +1165,29 @@ class AcquisitionTab(QWidget):
         self._spin_triggers.setToolTip("0 = unlimited triggers per event")
         self._spin_triggers.setMaximumWidth(90)
         trig_row.addWidget(self._spin_triggers)
+        trig_row.addSpacing(16)
+        trig_row.addWidget(QLabel("Latency:"))
+        self._spin_latency = QSpinBox()
+        self._spin_latency.setRange(0, LATENCY_MAX)
+        self._spin_latency.setValue(AcquisitionConfig.get_latency())
+        self._spin_latency.setToolTip(
+            "LATENCY_CONFIG of all chips in the acquisitions. "
+            "Lowering it by 1 moves the hits 1 BX earlier in the trigger window. "
+            "LATENCY ANALYSIS → APPLY LATENCY sets it.")
+        self._spin_latency.setMaximumWidth(90)
+        self._spin_latency.valueChanged.connect(AcquisitionConfig.save_latency)
+        trig_row.addWidget(self._spin_latency)
+        trig_row.addSpacing(16)
+        trig_row.addWidget(QLabel("nTRIGxEvent:"))
+        self._spin_ntrig = QSpinBox()
+        self._spin_ntrig.setRange(1, NTRIGGERS_MAX)
+        self._spin_ntrig.setValue(AcquisitionConfig.get_ntriggers())
+        self._spin_ntrig.setToolTip(
+            "BX read by each trigger (trigger window). Not the same as Triggers, "
+            "which is how many triggers are accepted.")
+        self._spin_ntrig.setMaximumWidth(90)
+        self._spin_ntrig.valueChanged.connect(AcquisitionConfig.save_ntriggers)
+        trig_row.addWidget(self._spin_ntrig)
         trig_row.addStretch()
         layout.addLayout(trig_row)
 
@@ -1166,6 +1208,12 @@ class AcquisitionTab(QWidget):
         self._vthresh_manual: set[tuple[int, int]] = set()
         self._refresh_vthresh_spinboxes()
         return group
+
+    def set_acquisition_latency(self, value: int) -> None:
+        """Fija la LATENCY_CONFIG de las próximas adquisiciones (APPLY LATENCY del Analysis tab)."""
+        self._spin_latency.setValue(value)
+        self._log_write(f"[INFO] Acquisition latency set to {self._spin_latency.value()} "
+                        "(LATENCY ANALYSIS).")
 
     # ------------------------------------------------------------------
     # Vthreshold_LIN: origen único = XML seleccionado en Config

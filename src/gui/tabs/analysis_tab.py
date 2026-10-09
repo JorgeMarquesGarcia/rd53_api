@@ -30,6 +30,7 @@ from src.gui.tabs.acquisition_tab import Raw2RootWorker, HitAnalysisWorker
 from src.gui.trajectory_view import TrajectoryView
 from src.gui.noise_mask_view import NoiseMaskView
 from src.gui.energy_view import EnergyView
+from src.gui.latency_view import LatencyView
 from src.plotter.calibration_view import discover_chips, build_chip_plots_widget
 
 MODE_CALIBRATION = 0
@@ -118,6 +119,98 @@ class NoiseAnalysisWorker(QObject):
             self.finished.emit()
 
 
+class LatencyAnalysisWorker(QObject):
+    """Carga un .root de Physics y ejecuta LatencyAnalysis fuera del hilo de la GUI.
+
+    nTRIGxEvent y el LATENCY_CONFIG de cada chip se leen del XML del run que
+    Ph2_ACF deja junto al .root (RunNNNNNN_*.xml). La ventana que manda es la
+    de los datos; sin XML solo se propone cuánto mover la latencia.
+
+    La latencia propuesta centra los hits en la ventana de las adquisiciones
+    (nTRIGxEvent del Acquisition tab), que puede no ser la del run analizado.
+    """
+    log_message = pyqtSignal(str)
+    analysed    = pyqtSignal(str, object)   # (root_path, result)
+    finished    = pyqtSignal()
+
+    def __init__(self, root_path: str):
+        super().__init__()
+        self._root_path = root_path
+
+    def _read_run_xml(self, root_path: Path, chips) -> tuple[str | None, int | None, dict]:
+        """(nombre del XML, nTRIGxEvent, {chip: LATENCY_CONFIG}) del XML del run."""
+        from src.config.xml.xml_manager import XmlManager
+        from src.chip.register_map import CalibrationSettings, ChipSettings
+        from src.chip.detector_geometry import rd53_id
+        from src.core.results_finder import find_run_xml
+
+        xml_path = find_run_xml(root_path)
+        if xml_path is None:
+            self.log_message.emit(f"[WARN] No run XML next to {root_path.name}: the current "
+                                  "LATENCY_CONFIG is unknown, only the shift is proposed.")
+            return None, None, {}
+
+        xml = XmlManager(xml_path, read_only=True)
+        xml.load()
+        ntrig = int(xml.get_calibration_setting(CalibrationSettings.N_TRIGGERS))
+        latency = {}
+        for h, lane in chips:
+            try:
+                latency[(h, lane)] = int(xml.get_chip_setting(h, rd53_id(h, lane), ChipSettings.LATENCY))
+            except Exception as e:
+                self.log_message.emit(f"[WARN] No LATENCY_CONFIG for H{h}·{lane} in {xml_path.name}: {e}")
+        self.log_message.emit(f"[INFO] Run XML {xml_path.name}: nTRIGxEvent = {ntrig}, LATENCY_CONFIG = "
+                              + ", ".join(f"H{h}·{c}: {v}" for (h, c), v in latency.items()))
+        return xml_path.name, ntrig, latency
+
+    def run(self):
+        try:
+            import numpy as np
+            from src.analysis.analysis_latency import LatencyAnalysis, window_sizes
+            from src.analysis.analysis_base import REQUIRED_COLUMNS, hits_per_chip
+            from src.config.acquisition_config import AcquisitionConfig
+
+            root_path = Path(self._root_path)
+            root_manager = SystemConfig.create_root_manager(path=self._root_path,
+                                                            branches=REQUIRED_COLUMNS)
+            root_manager.load(self._root_path)
+            sizes = window_sizes(root_manager.arrays)
+            if not sizes:
+                raise ValueError("the ROOT file has no entries")
+            chips = list(hits_per_chip(root_manager.arrays))
+            xml_name, xml_ntrig, latency = self._read_run_xml(root_path, chips)
+
+            # La ventana de los datos manda: es la que define las posiciones
+            ntrig = max(sizes, key=sizes.get)
+            if xml_ntrig is not None and xml_ntrig != ntrig:
+                self.log_message.emit(f"[WARN] nTRIGxEvent = {xml_ntrig} in the run XML, but the "
+                                      f"trigger windows in the data have {ntrig} BX: using {ntrig}.")
+
+            acq_ntrig = AcquisitionConfig.get_ntriggers()
+            with forward_analysis_logs(self.log_message.emit, "LATENCY"):
+                analysis = LatencyAnalysis(root_manager, ntrig=ntrig, chip_latency=latency,
+                                           new_Ntrig=acq_ntrig)
+            result = {
+                "ntrig": ntrig,
+                "acq_ntrig": acq_ntrig,
+                "acq_latency": AcquisitionConfig.get_latency(),
+                "xml_name": xml_name,
+                "histograms": {chip: np.bincount(pos, minlength=ntrig).tolist()
+                               for chip, pos in analysis.chip_positions.items()},
+                "chip_stats": analysis.chip_statistics,
+                "reference_chip": analysis.reference_chip,
+                "reference": analysis.reference_position,
+                "shift": acq_ntrig // 2 - analysis.reference_position,
+                "current_latency": latency,
+                "suggested_latency": analysis.chip_latency,
+            }
+            self.analysed.emit(self._root_path, result)
+        except Exception as e:
+            self.log_message.emit(f"[LATENCY ERROR] {Path(self._root_path).name}: {e}")
+        finally:
+            self.finished.emit()
+
+
 class EnergyAnalysisWorker(QObject):
     """Carga un .root, ejecuta NoiseAnalysis y HitAnalysis y calcula la energía de
     cada cluster con la calibración del Gain scan (leída antes en el hilo de la GUI:
@@ -159,6 +252,8 @@ class AnalysisTab(QWidget):
     file_selected = pyqtSignal(Path)
     # True/False alrededor de operaciones con PyROOT (igual que CalibrationTab)
     plots_loading = pyqtSignal(bool)
+    # APPLY LATENCY de un análisis de latencia: nueva latencia de las adquisiciones
+    acquisition_latency_applied = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -175,6 +270,8 @@ class AnalysisTab(QWidget):
         self._noise_worker: NoiseAnalysisWorker | None = None
         self._energy_thread: QThread | None = None
         self._energy_worker: EnergyAnalysisWorker | None = None
+        self._latency_thread: QThread | None = None
+        self._latency_worker: LatencyAnalysisWorker | None = None
         self._gain_file: Path | None = None
         self._gain_manual = False   # True si el usuario eligió el Gain scan con Browse
 
@@ -368,6 +465,15 @@ class AnalysisTab(QWidget):
         self._btn_noise.setVisible(False)
         layout.addWidget(self._btn_noise)
 
+        self._btn_latency = QPushButton("LATENCY ANALYSIS")
+        self._btn_latency.setObjectName("btn_launch")
+        self._btn_latency.setToolTip(
+            "Position of the hits in the nTRIGxEvent trigger window and the "
+            "LATENCY_CONFIG that centres them")
+        self._btn_latency.clicked.connect(self._run_latency_analysis)
+        self._btn_latency.setVisible(False)
+        layout.addWidget(self._btn_latency)
+
         # --- Energía depositada: calibración del Gain scan ---
         self._gain_group = QGroupBox("GAIN CALIBRATION (Gain scan .root)")
         gain_layout = QHBoxLayout(self._gain_group)
@@ -476,6 +582,7 @@ class AnalysisTab(QWidget):
         self._btn_hits.setVisible(not is_cal)
         self._btn_noise.setVisible(not is_cal)
         self._noise_repeats_row.setVisible(not is_cal)
+        self._btn_latency.setVisible(not is_cal)
         self._chk_animate.setVisible(not is_cal)
         self._gain_group.setVisible(not is_cal)
         self._btn_energy.setVisible(not is_cal)
@@ -665,6 +772,48 @@ class AnalysisTab(QWidget):
         self._noise_thread = None
         self._noise_worker = None
         self._btn_noise.setEnabled(True)
+
+    # ==================================================================
+    # LATENCY ANALYSIS (modo Acquisition)
+    # ==================================================================
+    def _run_latency_analysis(self):
+        path = self._selected_file
+        if path is None or path.suffix.lower() != ROOT_EXT:
+            self._log_write("[WARN] Select a .root file to run the latency analysis.")
+            return
+
+        if self._latency_thread is not None and self._latency_thread.isRunning():
+            self._log_write("[WARN] A latency analysis is already running.")
+            return
+
+        worker = LatencyAnalysisWorker(str(path))
+        self._latency_worker = worker
+        self._btn_latency.setEnabled(False)
+        self._log_write(f"[START] Running LatencyAnalysis on {path.name}...")
+        self._latency_thread = QThread(self)
+        worker.moveToThread(self._latency_thread)
+        self._latency_thread.started.connect(worker.run)
+        worker.log_message.connect(self._log_write)
+        worker.analysed.connect(self._on_latency_analysed)
+        worker.finished.connect(self._latency_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        self._latency_thread.finished.connect(self._on_latency_thread_finished)
+        self._latency_thread.finished.connect(self._latency_thread.deleteLater)
+        self._latency_thread.start()
+
+    def _on_latency_analysed(self, root_path: str, result: dict):
+        path = Path(root_path)
+        view = LatencyView(path, result)
+        view.log_message.connect(self._log_write)
+        view.latency_applied.connect(self.acquisition_latency_applied)
+        self._log_write(f"[OK]   LatencyAnalysis complete: reference at BX{result['reference']:g} "
+                        f"in a {result['ntrig']} BX window.")
+        self._add_result_tab(path, view, kind="latency")
+
+    def _on_latency_thread_finished(self):
+        self._latency_thread = None
+        self._latency_worker = None
+        self._btn_latency.setEnabled(True)
 
     # ==================================================================
     # ENERGY ANALYSIS (modo Acquisition)

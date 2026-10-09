@@ -43,6 +43,7 @@ ntrig_new = [5,10,15]
 for ntrig_val in ntrig_new:
     LA1 = LatencyAnalysis(root_manager=root_manager, ntrig=ntrig, chip_latency=chip_latency, new_Ntrig=ntrig_val)
     print(f"Latency for ntrig_new={ntrig_val}: {LA1.chip_latency}")
-    print(f"Explanation: Hit físico = latency_old + position_mean = 44 + {LA.statistics['mean']:.2f} = {44 + LA.statistics['mean']:.2f}")
-    print(f"             new_latency = hit_físico - ntrig_new//2 = {44 + LA.statistics['mean']:.2f} - {ntrig_val//2} = {44 + LA.statistics['mean'] - ntrig_val//2:.2f}")
+    ref = LA1.reference_position
+    print(f"Explanation: new_latency = latency_old - (reference_position - ntrig_new//2) "
+          f"= latency_old - ({ref:g} - {ntrig_val//2}) = latency_old {ntrig_val//2 - ref:+g}")
     

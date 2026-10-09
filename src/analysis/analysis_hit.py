@@ -22,12 +22,12 @@ import awkward as ak
 import numpy as np
 
 from src.config.root.root_manager import RootManager
-from src.analysis.analysis_base import BaseAnalysis, pixel_keys
+from src.analysis.analysis_base import BaseAnalysis, pixel_keys, trigger_windows
 from src.core.exceptions import NAErrorNoHits
 from src.chip.detector_geometry import to_global
 
 TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
-BX_TOLERANCE = 2    # BX máximos entre un hit y el del plano de trigger en su ventana (None = toda la ventana)
+BX_TOLERANCE = None  # BX máximos entre un hit y el del plano de trigger en su ventana (None = toda la ventana)
 
 
 class HitAnalysis(BaseAnalysis):
@@ -94,11 +94,8 @@ class HitAnalysis(BaseAnalysis):
         dentro de su ventana.
         """
         data = self.raw_data
-        bx_counter = ak.to_numpy(data.FW_bx_counter).astype(np.int64)
-        starts = np.ones(len(bx_counter), dtype=bool)
-        starts[1:] = np.diff(bx_counter) != 1
-        window = np.cumsum(starts) - 1                     # ventana de cada entrada
-        first = np.flatnonzero(starts)                     # primera entrada de cada ventana
+        bx_counter = ak.to_numpy(data.FW_bx_counter)
+        window, first = trigger_windows(bx_counter)        # ventana de cada entrada / primera entrada de cada una
         position = np.arange(len(bx_counter)) - first[window]
 
         sizes, n_windows = np.unique(np.diff(np.append(first, len(bx_counter))), return_counts=True)

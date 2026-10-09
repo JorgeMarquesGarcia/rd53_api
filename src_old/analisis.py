@@ -241,11 +241,11 @@ def plot_timing_variables(df: pd.DataFrame, save_path: Path | None = None, title
 
 if __name__ == "__main__":
     # Example usage: analyze latest ROOT file in Results directory
-    results_dir = Path("C:\\Users\\jmarques\\Documents\\00_Projects\\02_TFM\\01_Lab\\Python\\Data")
+    results_dir = Path("C:\\Users\\jmarques\\Containers\\RD53\\RD53A_GUI\\Results")
 
     try:
         # To analyze a specific file, uncomment and modify this line:
-        specific_file = "Run000289_Physics_Board000_001.root"
+        specific_file = "Run000384_Physics_Board000.root"
         
         # Find latest ROOT file
         root_handler = ROOTFileHandler(results_dir)
@@ -280,7 +280,7 @@ if __name__ == "__main__":
             
             # Create timing plots for both DataFrames
             logger.info("\nGenerating timing variable plots...")
-            output_dir = Path("C:\\Users\\jmarques\\Documents\\00_Projects\\02_TFM\\01_Lab\\Python\\Data\\Results")
+            output_dir = Path("C:\\Users\\jmarques\\Containers\\RD53\\RD53A_GUI\\Results")
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Plot for df (all events)
@@ -319,6 +319,7 @@ if __name__ == "__main__":
         # Keep variables in scope for interactive analysis
         logger.info("\n" + "=" * 80)
         logger.info("DataFrames 'df' and 'df_hits' are now available for analysis")
+        logger.info("You can now interact with them in the Python interpreter.")
         logger.info("Run with: python -i analisis.py")
         logger.info("=" * 80)
         

@@ -67,6 +67,22 @@ def format_chips(chips) -> str:
     return ", ".join(f"H{h}·{c}" for h, c in chips)
 
 
+def trigger_windows(bx_counter) -> tuple[np.ndarray, np.ndarray]:
+    """Ventana de trigger de cada entrada del TTree.
+
+    Cada trigger lee nTRIGxEvent BX consecutivos y Ph2_ACF guarda cada BX como
+    una entrada: las entradas de una ventana tienen FW_bx_counter consecutivo.
+    Devuelve (window, first): índice de ventana de cada entrada y primera
+    entrada de cada ventana. La posición de una entrada dentro de su ventana es
+    np.arange(len(window)) - first[window].
+    """
+    bx_counter = np.asarray(bx_counter).astype(np.int64)
+    starts = np.ones(len(bx_counter), dtype=bool)
+    starts[1:] = np.diff(bx_counter) != 1
+    window = np.cumsum(starts) - 1
+    return window, np.flatnonzero(starts)
+
+
 def flat_hits(data, active_chips):
     """Hits de `data` aplanados en arrays numpy, en el orden del fichero.
 

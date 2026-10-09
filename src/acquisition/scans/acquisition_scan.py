@@ -20,17 +20,22 @@ RAW_FILE_PATTERN = re.compile(r"Saving binary data into:\s*(\S+\.raw)")
 
 
 class AcquisitionScan(ABC):
-    def __init__(self, chips: list[tuple[int, int]], timeout: int | None = 60, scan_time: int = 60):
+    def __init__(self, chips: list[tuple[int, int]], timeout: int | None = 60, scan_time: int = 60,
+                 latency: int | None = None, ntriggers: int | None = None):
         """
         Args:
             chips: lista de (hybrid_id, rd53_id) a habilitar.
             timeout: espera máxima (s) a que el DAQ termine tras cerrar su
                      salida (ver Terminal.run_scan); None = sin límite.
             scan_time: duración del scan en segundos (-1 sin límite).
+            latency: LATENCY_CONFIG de todos los chips (None = el de AcquisitionMap).
+            ntriggers: nTRIGxEvent, BX que lee cada trigger (None = el de AcquisitionMap).
         """
         self.chips = list(chips)
         self.timeout = timeout
         self.scan_time = scan_time
+        self.latency = latency
+        self.ntriggers = ntriggers
         self.last_scan_end_pattern = None
         self.raw_path: Path | None = None   # .raw que escribe el DAQ (leído de su salida)
 
@@ -62,7 +67,7 @@ class AcquisitionScan(ABC):
             raise ValueError(f"Unsupported setting type: {type(setting)}")
 
     def _acq_setup_xml(self):
-        self._apply_map(AcquisitionMap().to_dict())
+        self._apply_map(AcquisitionMap(latency=self.latency, ntriggers=self.ntriggers).to_dict())
         for hybrid_id, rd53_id in self.chips:
             self.xml.set_chip_enable(hybrid_id, rd53_id, True)
 

@@ -263,6 +263,9 @@ class MainWindow(QMainWindow):
 
         # Conectar señal de configuración aplicada
         self.config_tab.config_applied.connect(self._on_config_applied)
+        # APPLY LATENCY del análisis de latencia → latencia de las adquisiciones
+        self.analysis_tab.acquisition_latency_applied.connect(
+            self.acquisition_tab.set_acquisition_latency)
 
     def _build_status_bar(self):
         self.status_bar = QStatusBar()

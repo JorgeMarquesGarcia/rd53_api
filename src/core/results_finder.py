@@ -92,3 +92,16 @@ def latest_files(
 
     # nlargest equivale a sorted(..., reverse=True)[:n], sin ordenar toda la lista
     return [p for _, p in heapq.nlargest(n, candidates, key=lambda t: t[0])]
+
+def find_run_xml(path: str | Path) -> Path | None:
+    """XML con el que se tomó un run: la copia que Ph2_ACF deja en Results.
+
+    Para Results/Run000385_Physics_Board000.root busca Results/Run000385_*.xml
+    (p. ej. Run000385_CMSIT_RD53A_Detector.xml). None si no hay ninguno.
+    """
+    path = Path(path)
+    run = path.name.split("_", 1)[0]
+    if not run.lower().startswith("run"):
+        return None
+    matches = sorted(path.parent.glob(f"{run}_*.xml"))
+    return matches[0] if matches else None
