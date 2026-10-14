@@ -9,7 +9,7 @@ from matplotlib.figure import Figure
 from matplotlib.transforms import offset_copy
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-from src.chip.detector_geometry import chip_origin, z_position
+from src.chip.detector_geometry import to_local, z_position
 from src.plotter.detector_planes import (
     TRACK_COLOR, Z_START, Z_END, ZORDER_TRACK, ZORDER_IMPACT, ZORDER_LABEL,
     add_tot_colorbar, draw_detector_planes, setup_detector_axes, tot_color,
@@ -190,9 +190,9 @@ class InteractiveCoincidencePlotter:
             self.ax.scatter([col], [row], [det_z], c=[tot_color(tot)], s=100, alpha=0.95,
                             edgecolors='black', linewidth=1.5, zorder=ZORDER_IMPACT)
             if labels is not None:
-                row_off, col_off = chip_origin(hid, lane)
+                local_row, local_col = to_local(hid, lane, row, col)
                 labels.append(self.ax.text(
-                    col, row, det_z, f'({col - col_off}, {row - row_off})  ToT {tot}',
+                    col, row, det_z, f'({local_col}, {local_row})  ToT {tot}',
                     transform=label_offset, fontsize=7, ha='left', va='bottom',
                     bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.7),
                     zorder=ZORDER_LABEL,

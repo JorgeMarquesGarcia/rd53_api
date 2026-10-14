@@ -15,12 +15,13 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QLabel, QPushButton, QLineEdit, QCheckBox, QTabWidget,
-    QListWidget, QListWidgetItem, QSpinBox,
+    QListWidget, QListWidgetItem, QSpinBox, QComboBox,
     QFileDialog, QButtonGroup,
 )
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal
 
 from src.config.system_config import SystemConfig
+from src.chip.detector_geometry import DETECTOR_LAYOUT, z_position
 from src.core.results_finder import (
     latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
@@ -46,6 +47,14 @@ _SEGMENT_QSS = (
     "QPushButton:checked { background: #003D4A; color: #00E5FF; "
     "border: 1px solid #00E5FF; font-weight: bold; }"
 )
+
+# Planos del detector: un track del HitAnalysis tiene hits en 2 o más
+N_PLANES = len({layer["z_pos"] for layer in DETECTOR_LAYOUT.values()})
+
+
+def track_planes(track: dict) -> int:
+    """Número de planos del detector con hit en un track {(hybrid, lane): (row, col, tot)}."""
+    return len({z_position(h) for h, _lane in track})
 
 
 class _ThreadLogForwarder(logging.Handler):
@@ -429,11 +438,24 @@ class AnalysisTab(QWidget):
         self._btn_convert.setVisible(False)
         layout.addWidget(self._btn_convert)
 
+        self._hits_options_row = QWidget()
+        hits_options = QHBoxLayout(self._hits_options_row)
+        hits_options.setContentsMargins(0, 0, 0, 0)
         self._chk_animate = QCheckBox("Animate trajectories")
         self._chk_animate.setChecked(True)
         self._chk_animate.setToolTip("Unchecked: draw all tracks at once")
-        self._chk_animate.setVisible(False)
-        layout.addWidget(self._chk_animate)
+        hits_options.addWidget(self._chk_animate)
+        hits_options.addStretch(1)
+        hits_options.addWidget(QLabel("Coincidence planes"))
+        self._combo_planes = QComboBox()
+        for n in range(2, N_PLANES + 1):
+            self._combo_planes.addItem(str(n), n)
+        self._combo_planes.setToolTip(
+            "Draw only the tracks with hits in at least this many detector planes "
+            f"(2 = all tracks, {N_PLANES} = tracks crossing every plane)")
+        hits_options.addWidget(self._combo_planes)
+        self._hits_options_row.setVisible(False)
+        layout.addWidget(self._hits_options_row)
 
         self._btn_hits = QPushButton("HIT ANALYSIS")
         self._btn_hits.setObjectName("btn_launch")
@@ -583,7 +605,7 @@ class AnalysisTab(QWidget):
         self._btn_noise.setVisible(not is_cal)
         self._noise_repeats_row.setVisible(not is_cal)
         self._btn_latency.setVisible(not is_cal)
-        self._chk_animate.setVisible(not is_cal)
+        self._hits_options_row.setVisible(not is_cal)
         self._gain_group.setVisible(not is_cal)
         self._btn_energy.setVisible(not is_cal)
 
@@ -701,13 +723,23 @@ class AnalysisTab(QWidget):
             self._log_write(f"[WARN] No tracks found in {path.name}.")
             return
 
+        min_planes = self._combo_planes.currentData()
+        tracks = [t for t in plot_coord if track_planes(t) >= min_planes]
+        summary = f"{n} tracks"
+        if len(tracks) < n:
+            summary = f"{len(tracks)} of {n} tracks with hits in at least {min_planes} planes"
+            self._log_write(f"[INFO] Coincidence planes: drawing {summary}.")
+        if not tracks:
+            self._log_write(f"[WARN] No tracks with hits in {min_planes} planes in {path.name}.")
+            return
+
         view = TrajectoryView()
         page = QWidget()
         page_layout = QVBoxLayout(page)
         page_layout.setContentsMargins(0, 0, 0, 0)
 
         header = QHBoxLayout()
-        header.addWidget(QLabel(f"{n} tracks"))
+        header.addWidget(QLabel(summary))
         header.addStretch()
         save_btn = QPushButton("Save Plot")
         save_btn.clicked.connect(lambda *_: self._save_trajectories(view))
@@ -718,9 +750,9 @@ class AnalysisTab(QWidget):
         self._add_result_tab(path, page, kind="hits")
         view.reset(active_chips)
         if self._chk_animate.isChecked():
-            view.animate(plot_coord)
+            view.animate(tracks)
         else:
-            view.draw_all(plot_coord)
+            view.draw_all(tracks)
 
     def _on_hit_thread_finished(self):
         self._hit_thread = None

@@ -209,7 +209,7 @@ class HitAnalysis(BaseAnalysis):
         Retorna una lista de len(nevents) donde cada elemento es un dict:
             {(hybrid_id, chip_lane): (row, col, tot)}
         con el hit de máximo ToT por detector, en coordenadas globales
-        (offsets de detector_geometry aplicados), y su ToT.
+        (offsets y giro de detector_geometry aplicados), y su ToT.
         Detectores sin hits se omiten del dict.
 
         Escribe en el log una línea por track con todos sus hits: coordenadas

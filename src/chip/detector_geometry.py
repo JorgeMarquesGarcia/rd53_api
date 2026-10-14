@@ -9,7 +9,11 @@ Sin dependencias externas, para poder importarlo desde cualquier capa sin ciclos
 Sistema de coordenadas global, en píxeles:
     X = columna global, Y = fila global, con origen en la esquina del chip
     lane 0 de las capas 2x2.
-    Z = posición del plano, en unidades arbitrarias del telescopio.
+    Z = posición del plano, en mm desde la capa Z=0 (diseño 3D del telescopio).
+
+Un chip montado girado 180° en su plano ocupa el mismo rectángulo, pero su
+píxel local (fila, columna) cae en (SENSOR_ROWS-1-fila, SENSOR_COLS-1-columna)
+de ese rectángulo: to_global y to_local aplican el giro.
 
 Vista XY (las filas crecen hacia abajo, como en los plots):
 
@@ -24,7 +28,8 @@ Vista XY (las filas crecen hacia abajo, como en los plots):
  (filas)
     Capas Z=1 y Z=2: cuatro chips cada una.
     Capa Z=0: un único chip, alineado con la lane 0 de las capas 2x2
-    (todas las capas tienen la lane 0 en la esquina superior izquierda).
+    (todas las capas tienen la lane 0 en la esquina superior izquierda)
+    y montado girado 180° respecto a ellas.
 """
 from __future__ import annotations
 
@@ -67,12 +72,15 @@ SINGLE_ORIGIN: tuple[int, int] = QUAD_ORIGINS[0]
 #   rd53_offset : offset que se suma al chip_id local para obtener el rd53_id
 #                 global que usa CMSITminiDAQ
 #   single      : True si la capa tiene un único sensor (geometría especial Z=0)
-#   z_pos       : posición Z física en unidades arbitrarias del telescopio
+#   z_pos       : posición Z física del plano, en mm
+#   rotation    : giro de los chips de la capa en su plano, en grados (0 o 180)
 #   chip_origins: {lane: (fila, columna)} origen de cada chip en coordenadas
 #                 globales, en píxeles
 
-def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: int,
-           chip_origins: dict[int, tuple[int, int]]) -> dict:
+def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
+           chip_origins: dict[int, tuple[int, int]], rotation: int = 0) -> dict:
+    if rotation not in (0, 180):
+        raise ValueError(f"rotation must be 0 or 180 degrees, got {rotation}")
     return {
         "label":        label,
         "hybrid":       hybrid,
@@ -80,16 +88,22 @@ def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: int,
         "rd53_offset":  rd53_offset,
         "single":       len(chip_origins) == 1,
         "z_pos":        z_pos,
+        "rotation":     rotation,
         "chip_origins": dict(chip_origins),
     }
 
 
+# Separación entre planos (diseño 3D del detector)
+Z_GAP_LAYER_0_1 = 4.6    # mm
+Z_GAP_LAYER_1_2 = 19.0   # mm
+
 DETECTOR_LAYOUT: dict[int, dict] = {
-    0: _layer("Layer 0  (Z=0)", hybrid=0, rd53_offset=0, z_pos=0,
-              chip_origins={0: SINGLE_ORIGIN}),
-    1: _layer("Layer 1  (Z=1)", hybrid=1, rd53_offset=4, z_pos=3,
+    # La capa de un solo chip está montada girada 180° respecto a las 2x2
+    0: _layer("Layer 0  (Z=0)", hybrid=0, rd53_offset=0, z_pos=0.0,
+              chip_origins={0: SINGLE_ORIGIN}, rotation=180),
+    1: _layer("Layer 1  (Z=1)", hybrid=1, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1,
               chip_origins=QUAD_ORIGINS),
-    2: _layer("Layer 2  (Z=2)", hybrid=2, rd53_offset=4, z_pos=6,
+    2: _layer("Layer 2  (Z=2)", hybrid=2, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1 + Z_GAP_LAYER_1_2,
               chip_origins=QUAD_ORIGINS),
 }
 
@@ -128,13 +142,13 @@ def rd53_id(hybrid_id: int, chip_id_local: int) -> int:
     return chip_id_local + layer_for_hybrid(hybrid_id)["rd53_offset"]
 
 
-def z_position(hybrid_id: int) -> int:
-    """Devuelve la posición Z de un hybrid."""
+def z_position(hybrid_id: int) -> float:
+    """Devuelve la posición Z de un hybrid, en mm."""
     return layer_for_hybrid(hybrid_id)["z_pos"]
 
 
-def z_range() -> tuple[int, int]:
-    """Devuelve (z_min, z_max) de los planos del detector."""
+def z_range() -> tuple[float, float]:
+    """Devuelve (z_min, z_max) de los planos del detector, en mm."""
     zs = [layer["z_pos"] for layer in DETECTOR_LAYOUT.values()]
     return min(zs), max(zs)
 
@@ -155,10 +169,24 @@ def chip_origin(hybrid_id: int, chip_lane: int) -> tuple[int, int]:
         ) from None
 
 
+def _rotate(hybrid_id: int, row: int, col: int) -> tuple[int, int]:
+    """Aplica el giro de la capa a (fila, columna) dentro del chip (el giro de 180° es su propio inverso)."""
+    if layer_for_hybrid(hybrid_id)["rotation"] == 180:
+        return SENSOR_ROWS - 1 - row, SENSOR_COLS - 1 - col
+    return row, col
+
+
 def to_global(hybrid_id: int, chip_lane: int, row: int, col: int) -> tuple[int, int]:
     """Convierte (fila, columna) locales de un chip a coordenadas globales."""
     row_off, col_off = chip_origin(hybrid_id, chip_lane)
+    row, col = _rotate(hybrid_id, row, col)
     return row + row_off, col + col_off
+
+
+def to_local(hybrid_id: int, chip_lane: int, row: int, col: int) -> tuple[int, int]:
+    """Convierte (fila, columna) globales a las locales del chip (inversa de to_global)."""
+    row_off, col_off = chip_origin(hybrid_id, chip_lane)
+    return _rotate(hybrid_id, row - row_off, col - col_off)
 
 
 def chip_bounds(hybrid_id: int, chip_lane: int) -> tuple[int, int, int, int]:

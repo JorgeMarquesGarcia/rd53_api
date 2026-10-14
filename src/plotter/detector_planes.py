@@ -21,7 +21,7 @@ from src.chip.detector_geometry import (
 # El rayo cósmico entra por arriba: el eje Z se dibuja invertido (Z=0 arriba)
 # y la partícula recorre los planos en Z creciente, de Z_START a Z_END.
 # El track se extiende Z_MARGIN más allá de los planos extremos.
-Z_MARGIN = 1
+Z_MARGIN = 4.0     # mm
 Z_START = z_range()[0] - Z_MARGIN
 Z_END = z_range()[1] + Z_MARGIN
 
@@ -29,7 +29,7 @@ Z_ASPECT = 420     # altura visual del eje Z frente a columnas y filas (en píxe
 VIEW_ZOOM = 1.25   # cuánto llena la escena la caja de la figura
 
 # Estilo de los planos
-PLANE_THICKNESS = 0.2                  # grosor visual de cada lámina, en unidades de Z
+PLANE_THICKNESS = 0.8                  # grosor visual de cada lámina, en mm de Z
 PLANE_FACE_COLOR = (0.55, 0.66, 0.80)  # azul grisáceo
 PLANE_EDGE_COLOR = (0.30, 0.40, 0.55)
 PLANE_ALPHA = 0.25
