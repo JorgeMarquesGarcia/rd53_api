@@ -15,6 +15,10 @@ Un chip montado girado 180° en su plano ocupa el mismo rectángulo, pero su
 píxel local (fila, columna) cae en (SENSOR_ROWS-1-fila, SENSOR_COLS-1-columna)
 de ese rectángulo: to_global y to_local aplican el giro.
 
+El alineamiento de cada capa (medido con tracks) desplaza el origen de sus
+chips respecto a la posición nominal: lo aplican chip_origin y todo lo que
+depende de él (to_global, to_local, chip_bounds).
+
 Vista XY (las filas crecen hacia abajo, como en los plots):
 
         0                         400                         800   (columnas)
@@ -28,8 +32,8 @@ Vista XY (las filas crecen hacia abajo, como en los plots):
  (filas)
     Capas Z=1 y Z=2: cuatro chips cada una.
     Capa Z=0: un único chip, alineado con la lane 0 de las capas 2x2
-    (todas las capas tienen la lane 0 en la esquina superior izquierda)
-    y montado girado 180° respecto a ellas.
+    (todas las capas tienen la lane 0 en la esquina superior izquierda),
+    montado girado 180° respecto a ellas y desplazado según su alineamiento.
 """
 from __future__ import annotations
 
@@ -74,11 +78,14 @@ SINGLE_ORIGIN: tuple[int, int] = QUAD_ORIGINS[0]
 #   single      : True si la capa tiene un único sensor (geometría especial Z=0)
 #   z_pos       : posición Z física del plano, en mm
 #   rotation    : giro de los chips de la capa en su plano, en grados (0 o 180)
-#   chip_origins: {lane: (fila, columna)} origen de cada chip en coordenadas
-#                 globales, en píxeles
+#   chip_origins: {lane: (fila, columna)} origen nominal de cada chip en
+#                 coordenadas globales, en píxeles
+#   alignment   : (fila, columna) en píxeles que se suma a los orígenes
+#                 nominales: corrección de alineamiento medida con tracks
 
 def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
-           chip_origins: dict[int, tuple[int, int]], rotation: int = 0) -> dict:
+           chip_origins: dict[int, tuple[int, int]], rotation: int = 0,
+           alignment: tuple[int, int] = (0, 0)) -> dict:
     if rotation not in (0, 180):
         raise ValueError(f"rotation must be 0 or 180 degrees, got {rotation}")
     return {
@@ -90,6 +97,7 @@ def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
         "z_pos":        z_pos,
         "rotation":     rotation,
         "chip_origins": dict(chip_origins),
+        "alignment":    tuple(alignment),
     }
 
 
@@ -97,10 +105,18 @@ def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
 Z_GAP_LAYER_0_1 = 4.6    # mm
 Z_GAP_LAYER_1_2 = 19.0   # mm
 
+# Alineamiento de la capa Z=0 respecto a las 2x2, en píxeles de 50 µm:
+# (+21, +31) = (1.05, 1.55) mm, ±3 px. Ajustado con los 10 tracks de 3 planos
+# del Run000401 (20 h de cósmicos) que minimizan los residuos de la recta.
+# Con 3 planos solo se mide el desalineo relativo: se atribuye a la capa Z=0,
+# la montada aparte y girada, y las 2x2 quedan como referencia.
+LAYER_0_ALIGNMENT = (21, 31)
+
 DETECTOR_LAYOUT: dict[int, dict] = {
     # La capa de un solo chip está montada girada 180° respecto a las 2x2
     0: _layer("Layer 0  (Z=0)", hybrid=0, rd53_offset=0, z_pos=0.0,
-              chip_origins={0: SINGLE_ORIGIN}, rotation=180),
+              chip_origins={0: SINGLE_ORIGIN}, rotation=180,
+              alignment=LAYER_0_ALIGNMENT),
     1: _layer("Layer 1  (Z=1)", hybrid=1, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1,
               chip_origins=QUAD_ORIGINS),
     2: _layer("Layer 2  (Z=2)", hybrid=2, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1 + Z_GAP_LAYER_1_2,
@@ -154,19 +170,24 @@ def z_range() -> tuple[float, float]:
 
 
 def chip_origin(hybrid_id: int, chip_lane: int) -> tuple[int, int]:
-    """Origen (fila, columna) del chip en coordenadas globales, en píxeles.
+    """Origen (fila, columna) del chip en coordenadas globales, en píxeles,
+    con el alineamiento de su capa aplicado.
 
     En una capa de un solo chip el lane no importa: siempre hay un único origen.
     """
-    origins = layer_for_hybrid(hybrid_id)["chip_origins"]
+    layer = layer_for_hybrid(hybrid_id)
+    origins = layer["chip_origins"]
     if len(origins) == 1:
-        return next(iter(origins.values()))
-    try:
-        return origins[chip_lane]
-    except KeyError:
-        raise ValueError(
-            f"chip_lane {chip_lane} not found in hybrid {hybrid_id}"
-        ) from None
+        row, col = next(iter(origins.values()))
+    else:
+        try:
+            row, col = origins[chip_lane]
+        except KeyError:
+            raise ValueError(
+                f"chip_lane {chip_lane} not found in hybrid {hybrid_id}"
+            ) from None
+    d_row, d_col = layer["alignment"]
+    return row + d_row, col + d_col
 
 
 def _rotate(hybrid_id: int, row: int, col: int) -> tuple[int, int]:
@@ -197,8 +218,5 @@ def chip_bounds(hybrid_id: int, chip_lane: int) -> tuple[int, int, int, int]:
 
 def detector_extent() -> tuple[int, int]:
     """Devuelve (n_filas, n_columnas) del área que cubren todos los planos."""
-    n_rows = max(r + SENSOR_ROWS for layer in DETECTOR_LAYOUT.values()
-                 for r, _ in layer["chip_origins"].values())
-    n_cols = max(c + SENSOR_COLS for layer in DETECTOR_LAYOUT.values()
-                 for _, c in layer["chip_origins"].values())
-    return n_rows, n_cols
+    bounds = [chip_bounds(h, lane) for h, lane in all_chip_keys()]
+    return max(b[1] for b in bounds), max(b[3] for b in bounds)
