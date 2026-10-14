@@ -15,9 +15,10 @@ Un chip montado girado 180° en su plano ocupa el mismo rectángulo, pero su
 píxel local (fila, columna) cae en (SENSOR_ROWS-1-fila, SENSOR_COLS-1-columna)
 de ese rectángulo: to_global y to_local aplican el giro.
 
-El alineamiento de cada capa (medido con tracks) desplaza el origen de sus
-chips respecto a la posición nominal: lo aplican chip_origin y todo lo que
-depende de él (to_global, to_local, chip_bounds).
+El alineamiento de cada capa (medido con tracks) solo corrige la posición de
+los hits: lo aplican chip_origin, to_global y to_local. Los chips se dibujan
+en su posición nominal (chip_bounds), así que en los plots el detector se ve
+perfectamente alineado.
 
 Vista XY (las filas crecen hacia abajo, como en los plots):
 
@@ -32,8 +33,8 @@ Vista XY (las filas crecen hacia abajo, como en los plots):
  (filas)
     Capas Z=1 y Z=2: cuatro chips cada una.
     Capa Z=0: un único chip, alineado con la lane 0 de las capas 2x2
-    (todas las capas tienen la lane 0 en la esquina superior izquierda),
-    montado girado 180° respecto a ellas y desplazado según su alineamiento.
+    (todas las capas tienen la lane 0 en la esquina superior izquierda)
+    y montado girado 180° respecto a ellas.
 """
 from __future__ import annotations
 
@@ -81,7 +82,8 @@ SINGLE_ORIGIN: tuple[int, int] = QUAD_ORIGINS[0]
 #   chip_origins: {lane: (fila, columna)} origen nominal de cada chip en
 #                 coordenadas globales, en píxeles
 #   alignment   : (fila, columna) en píxeles que se suma a los orígenes
-#                 nominales: corrección de alineamiento medida con tracks
+#                 nominales al situar los hits: corrección de alineamiento
+#                 medida con tracks (no cambia dónde se dibuja el chip)
 
 def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
            chip_origins: dict[int, tuple[int, int]], rotation: int = 0,
@@ -101,26 +103,37 @@ def _layer(label: str, hybrid: int, rd53_offset: int, z_pos: float,
     }
 
 
-# Separación entre planos (diseño 3D del detector)
-Z_GAP_LAYER_0_1 = 4.6    # mm
-Z_GAP_LAYER_1_2 = 19.0   # mm
+# Separación entre planos, ajustada con los 10 tracks de 3 planos del
+# Run000401 (20 h de cósmicos) junto con LAYER_ALIGNMENT. Los tracks rectos
+# solo miden la proporción d01/d12 = 0.45 ± 0.02, así que se mantiene la
+# distancia total del diseño 3D (23.6 mm). El diseño 3D da 4.6 y 19.0 mm
+# (proporción 0.24), que deja residuos claramente mayores.
+Z_GAP_LAYER_0_1 = 7.3    # mm
+Z_GAP_LAYER_1_2 = 16.3   # mm
 
-# Alineamiento de la capa Z=0 respecto a las 2x2, en píxeles de 50 µm:
-# (+21, +31) = (1.05, 1.55) mm, ±3 px. Ajustado con los 10 tracks de 3 planos
-# del Run000401 (20 h de cósmicos) que minimizan los residuos de la recta.
-# Con 3 planos solo se mide el desalineo relativo: se atribuye a la capa Z=0,
-# la montada aparte y girada, y las 2x2 quedan como referencia.
-LAYER_0_ALIGNMENT = (21, 31)
+# Alineamiento de cada capa (fila, columna), en píxeles de 50 µm, ajustado
+# junto con las distancias Z con los mismos tracks.
+# Con 3 planos solo se mide el desalineo relativo: los tracks piden que la
+# capa Z=0 se mueva (+27, +35) px = (1.35, 1.75) mm respecto a las 2x2 (±1 px
+# en filas, ±3 px en columnas). Una traslación o inclinación común de todo el
+# telescopio no cambia ningún residuo, así que ese desalineo se reparte entre
+# las tres capas de la forma que menos aleja cada hit de su píxel nominal
+# (mínima norma): ningún impacto se sale más de ~0.5 mm del chip dibujado.
+LAYER_ALIGNMENT: dict[int, tuple[int, int]] = {
+    0: (8, 11),
+    1: (-12, -15),
+    2: (4, 5),
+}
 
 DETECTOR_LAYOUT: dict[int, dict] = {
     # La capa de un solo chip está montada girada 180° respecto a las 2x2
     0: _layer("Layer 0  (Z=0)", hybrid=0, rd53_offset=0, z_pos=0.0,
               chip_origins={0: SINGLE_ORIGIN}, rotation=180,
-              alignment=LAYER_0_ALIGNMENT),
+              alignment=LAYER_ALIGNMENT[0]),
     1: _layer("Layer 1  (Z=1)", hybrid=1, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1,
-              chip_origins=QUAD_ORIGINS),
+              chip_origins=QUAD_ORIGINS, alignment=LAYER_ALIGNMENT[1]),
     2: _layer("Layer 2  (Z=2)", hybrid=2, rd53_offset=4, z_pos=Z_GAP_LAYER_0_1 + Z_GAP_LAYER_1_2,
-              chip_origins=QUAD_ORIGINS),
+              chip_origins=QUAD_ORIGINS, alignment=LAYER_ALIGNMENT[2]),
 }
 
 
@@ -169,24 +182,28 @@ def z_range() -> tuple[float, float]:
     return min(zs), max(zs)
 
 
-def chip_origin(hybrid_id: int, chip_lane: int) -> tuple[int, int]:
-    """Origen (fila, columna) del chip en coordenadas globales, en píxeles,
-    con el alineamiento de su capa aplicado.
+def nominal_origin(hybrid_id: int, chip_lane: int) -> tuple[int, int]:
+    """Origen nominal (fila, columna) del chip en coordenadas globales, en
+    píxeles: donde se dibuja, sin el alineamiento.
 
     En una capa de un solo chip el lane no importa: siempre hay un único origen.
     """
-    layer = layer_for_hybrid(hybrid_id)
-    origins = layer["chip_origins"]
+    origins = layer_for_hybrid(hybrid_id)["chip_origins"]
     if len(origins) == 1:
-        row, col = next(iter(origins.values()))
-    else:
-        try:
-            row, col = origins[chip_lane]
-        except KeyError:
-            raise ValueError(
-                f"chip_lane {chip_lane} not found in hybrid {hybrid_id}"
-            ) from None
-    d_row, d_col = layer["alignment"]
+        return next(iter(origins.values()))
+    try:
+        return origins[chip_lane]
+    except KeyError:
+        raise ValueError(
+            f"chip_lane {chip_lane} not found in hybrid {hybrid_id}"
+        ) from None
+
+
+def chip_origin(hybrid_id: int, chip_lane: int) -> tuple[int, int]:
+    """Origen (fila, columna) del chip para situar sus hits: el nominal más el
+    alineamiento de su capa."""
+    row, col = nominal_origin(hybrid_id, chip_lane)
+    d_row, d_col = layer_for_hybrid(hybrid_id)["alignment"]
     return row + d_row, col + d_col
 
 
@@ -211,8 +228,9 @@ def to_local(hybrid_id: int, chip_lane: int, row: int, col: int) -> tuple[int, i
 
 
 def chip_bounds(hybrid_id: int, chip_lane: int) -> tuple[int, int, int, int]:
-    """Devuelve (fila_min, fila_max, col_min, col_max) del chip en coordenadas globales."""
-    row_off, col_off = chip_origin(hybrid_id, chip_lane)
+    """Devuelve (fila_min, fila_max, col_min, col_max) del chip en coordenadas
+    globales, en su posición nominal (la que se dibuja)."""
+    row_off, col_off = nominal_origin(hybrid_id, chip_lane)
     return row_off, row_off + SENSOR_ROWS, col_off, col_off + SENSOR_COLS
 
 

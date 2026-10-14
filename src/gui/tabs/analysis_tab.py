@@ -21,14 +21,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal
 
 from src.config.system_config import SystemConfig
-from src.chip.detector_geometry import DETECTOR_LAYOUT, z_position
 from src.core.results_finder import (
     latest_files, detect_analysis, ROOT_EXT, RAW_EXT,
     CALIBRATION_NAME_PATTERNS, ACQUISITION_NAME_PATTERNS,
 )
 from src.gui.gui_utils import append_log, install_tab_close_button, make_log_view
-from src.gui.tabs.acquisition_tab import Raw2RootWorker, HitAnalysisWorker
-from src.gui.trajectory_view import TrajectoryView
+from src.gui.tabs.acquisition_tab import Raw2RootWorker, HitAnalysisWorker, N_PLANES
+from src.gui.trajectory_view import TrajectoryView, track_planes
 from src.gui.noise_mask_view import NoiseMaskView
 from src.gui.energy_view import EnergyView
 from src.gui.latency_view import LatencyView
@@ -47,14 +46,6 @@ _SEGMENT_QSS = (
     "QPushButton:checked { background: #003D4A; color: #00E5FF; "
     "border: 1px solid #00E5FF; font-weight: bold; }"
 )
-
-# Planos del detector: un track del HitAnalysis tiene hits en 2 o más
-N_PLANES = len({layer["z_pos"] for layer in DETECTOR_LAYOUT.values()})
-
-
-def track_planes(track: dict) -> int:
-    """Número de planos del detector con hit en un track {(hybrid, lane): (row, col, tot)}."""
-    return len({z_position(h) for h, _lane in track})
 
 
 class _ThreadLogForwarder(logging.Handler):
@@ -724,7 +715,9 @@ class AnalysisTab(QWidget):
             return
 
         min_planes = self._combo_planes.currentData()
-        tracks = [t for t in plot_coord if track_planes(t) >= min_planes]
+        # Cada track conserva su número del log de HitAnalysis (Track N)
+        numbers = [i for i, t in enumerate(plot_coord, start=1) if track_planes(t) >= min_planes]
+        tracks = [plot_coord[i - 1] for i in numbers]
         summary = f"{n} tracks"
         if len(tracks) < n:
             summary = f"{len(tracks)} of {n} tracks with hits in at least {min_planes} planes"
@@ -750,9 +743,9 @@ class AnalysisTab(QWidget):
         self._add_result_tab(path, page, kind="hits")
         view.reset(active_chips)
         if self._chk_animate.isChecked():
-            view.animate(tracks)
+            view.animate(tracks, numbers)
         else:
-            view.draw_all(tracks)
+            view.draw_all(tracks, numbers)
 
     def _on_hit_thread_finished(self):
         self._hit_thread = None

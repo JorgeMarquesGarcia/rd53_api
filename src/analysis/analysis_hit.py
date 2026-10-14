@@ -11,7 +11,8 @@ Funciones principales:
 - _group_trigger_windows: quita los píxeles ruidosos, une los BX de cada trigger en un
   evento y aplica la coincidencia en BX.
 - _extract_hits: aplica el filtro de trigger y valida eventos.
-- _detector_filter: selecciona eventos con hits en otros chips.
+- _detector_filter: selecciona eventos con hits en otros chips y, con min_planes,
+  en al menos ese número de planos del detector.
 - _tot_filter: filtra eventos por umbral de ToT.
 - _layer_filter: filtra eventos por capas específicas.
 - _extract_track_coordinates: obtiene coordenadas de trayectoria usando el hit de máximo ToT por plano
@@ -24,10 +25,11 @@ import numpy as np
 from src.config.root.root_manager import RootManager
 from src.analysis.analysis_base import BaseAnalysis, pixel_keys, trigger_windows
 from src.core.exceptions import NAErrorNoHits
-from src.chip.detector_geometry import to_global
+from src.chip.detector_geometry import to_global, z_position
 
 TOT_THRESHOLD = 2   # un evento se descarta si TODOS sus hits tienen ToT < umbral
 BX_TOLERANCE = None  # BX máximos entre un hit y el del plano de trigger en su ventana (None = toda la ventana)
+MIN_PLANES = None    # planos del detector con hits que exige la coincidencia (None = basta otro chip)
 
 
 class HitAnalysis(BaseAnalysis):
@@ -35,17 +37,22 @@ class HitAnalysis(BaseAnalysis):
 
     def __init__(self, root_manager: RootManager, tot_threshold: int = TOT_THRESHOLD,
                  bx_tolerance: int | None = BX_TOLERANCE,
-                 noisy_pixels: dict[tuple[int, int], list[tuple[int, int]]] | None = None):
+                 noisy_pixels: dict[tuple[int, int], list[tuple[int, int]]] | None = None,
+                 min_planes: int | None = MIN_PLANES):
         """Inicializa el analizador y prepara los hits filtrados.
 
         noisy_pixels: {(hybrid, lane): [(row, col), ...]} (NoiseAnalysis.noisy_pixels).
         Sus hits se descartan antes de buscar coincidencias.
+
+        min_planes: la coincidencia exige además hits en al menos ese número de
+        planos del detector (posiciones Z distintas), contando el de trigger.
         """
         super().__init__(root_manager)
         self.logger.info("HitAnalysis initialized successfully")
         self.tot_threshold = tot_threshold
         self.bx_tolerance = bx_tolerance
         self.noisy_pixels = noisy_pixels or {}
+        self.min_planes = min_planes
         self.window_data = None
         self.trigger_data = None
         self.hits = None
@@ -64,8 +71,12 @@ class HitAnalysis(BaseAnalysis):
                          len(self.trigger_data))
 
         coincidence_hits = self.coincidence()
-        self.logger.info("Coincidence filter applied: %d windows with hits in other chips",
-                         len(coincidence_hits))
+        if self.min_planes is None:
+            self.logger.info("Coincidence filter applied: %d windows with hits in other chips",
+                             len(coincidence_hits))
+        else:
+            self.logger.info("Coincidence filter applied: %d windows with hits in at least %d planes",
+                             len(coincidence_hits), self.min_planes)
 
         hits = self._tot_filter(coincidence_hits, tot_threshold=self.tot_threshold)
         self.logger.info("ToT filter applied: %d windows with some hit ToT >= %s",
@@ -175,10 +186,24 @@ class HitAnalysis(BaseAnalysis):
         return self._detector_filter()
 
     def _detector_filter(self, data=None):
-        """Implementa el filtro de detector."""
+        """Implementa el filtro de detector: hits en algún otro chip y, con
+        min_planes, en al menos min_planes planos del detector."""
         if data is None:
             data = self.trigger_data
-        return data[ak.sum(data.RD53_frame_event_nhits[:, 1:], axis=1) >= 1]
+        coincidence = ak.to_numpy(ak.sum(data.RD53_frame_event_nhits[:, 1:], axis=1) >= 1)
+        if self.min_planes is not None:
+            coincidence &= self._planes_with_hits(data) >= self.min_planes
+        return data[coincidence]
+
+    def _planes_with_hits(self, data) -> np.ndarray:
+        """Número de planos del detector (posiciones Z) con algún hit en cada evento."""
+        _, chip_plane = np.unique([z_position(h) for h, _lane in self.active_chips],
+                                  return_inverse=True)
+        has_hits = ak.to_numpy(data.RD53_frame_event_nhits) > 0   # (eventos, chips)
+        plane_hit = np.zeros((len(has_hits), chip_plane.max() + 1), dtype=bool)
+        for chip, plane in enumerate(chip_plane):
+            plane_hit[:, plane] |= has_hits[:, chip]
+        return plane_hit.sum(axis=1)
 
     def filter_tot(self, data=None, tot_threshold=TOT_THRESHOLD):
         """Filtra eventos cuyo ToT cumple el umbral definido."""

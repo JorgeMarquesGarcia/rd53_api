@@ -10,7 +10,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QSplitter,
     QGroupBox, QLabel, QPushButton,
-    QSpinBox, QRadioButton,
+    QSpinBox, QRadioButton, QComboBox,
     QButtonGroup,
     QScrollArea, QProgressBar,
 )
@@ -48,6 +48,9 @@ PHYSICS_BOX_STYLE: str = (
     "border: 1px solid rgba(255, 214, 0, 140); border-radius: 4px; }"
 )
 VTHRESH_MISSING_STYLE: str = "QSpinBox { border: 1px solid #FF5252; }"
+
+# Planos del detector: un track del HitAnalysis tiene hits en 2 o más
+N_PLANES: int = len({layer["z_pos"] for layer in DETECTOR_LAYOUT.values()})
 
 
 def _results_dir() -> Path:
@@ -208,10 +211,12 @@ class HitAnalysisWorker(QObject):
     # (en el modo standalone esto se repite en cada snapshot del poll).
     warn_empty_chips = True
 
-    def __init__(self, root_path: str, min_repeats: int | None = None):
+    def __init__(self, root_path: str, min_repeats: int | None = None,
+                 min_planes: int | None = None):
         super().__init__()
         self._root_path = root_path
         self._min_repeats = min_repeats   # None = el valor por defecto de NoiseAnalysis
+        self._min_planes = min_planes     # None = el valor por defecto de HitAnalysis
 
     def run(self):
         try:
@@ -233,7 +238,8 @@ class HitAnalysisWorker(QObject):
                     )
             try:
                 noise = NoiseAnalysis(root_manager, min_repeats=self._min_repeats or MIN_REPEATS)
-                analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels)
+                analysis = HitAnalysis(root_manager, noisy_pixels=noise.noisy_pixels,
+                                       min_planes=self._min_planes)
                 plot_coord, active_chips = analysis.plot_coord, analysis.active_chips
             except NAErrorNoHits:
                 plot_coord, active_chips = [], []
@@ -574,6 +580,8 @@ class AcquisitionTab(QWidget):
 
         # Estado — UI (se consulta durante _build_ui, debe existir antes)
         self._running: bool = False
+        # Planos mínimos de la coincidencia, fijados al pulsar START para toda la toma
+        self._min_planes: int = 2
 
         # Estado — Timed
         self._worker: QObject | None = None
@@ -693,6 +701,22 @@ class AcquisitionTab(QWidget):
         self._chips_label.setStyleSheet("color: #505868; font-size: 11px;")
         chips_layout.addWidget(self._chips_label)
         layout.addWidget(chips_group)
+
+        # --- Filtro de coincidencia del HitAnalysis ---
+        coinc_group = QGroupBox("COINCIDENCE FILTER")
+        coinc_row   = QHBoxLayout(coinc_group)
+        coinc_row.addWidget(QLabel("Min. planes with hits:"))
+        self._combo_planes = QComboBox()
+        for n in range(2, N_PLANES + 1):
+            self._combo_planes.addItem(str(n), n)
+        self._combo_planes.setToolTip(
+            "Keep only the tracks with hits in at least this many detector planes "
+            f"(2 = all tracks, {N_PLANES} = tracks crossing every plane). "
+            "Applied in the coincidence filter of the analysis; fixed when START is pressed.")
+        self._combo_planes.setMaximumWidth(80)
+        coinc_row.addWidget(self._combo_planes)
+        coinc_row.addStretch()
+        layout.addWidget(coinc_group)
 
         # --- Status standalone (oculto en modo timed) ---
         self._standalone_status = QLabel("")
@@ -849,6 +873,10 @@ class AcquisitionTab(QWidget):
             )
             self._update_start_enabled()
             return
+
+        self._min_planes = self._combo_planes.currentData()
+        self._log_write(f"[INFO] Coincidence filter: tracks with hits in at least "
+                        f"{self._min_planes} planes.")
 
         if self._mode_group.checkedId() == 0:
             self._start_timed(chips)
@@ -1010,7 +1038,7 @@ class AcquisitionTab(QWidget):
             self._end_job()
 
     def _on_job_root_ready(self, root_path: str):
-        worker = HitAnalysisWorker(root_path)
+        worker = HitAnalysisWorker(root_path, min_planes=self._min_planes)
         self._retire_thread(self._hit_thread)
         self._hit_worker = worker
         self._hit_thread = QThread()
@@ -1135,6 +1163,7 @@ class AcquisitionTab(QWidget):
         # desactivado y la UI incoherente con lo que se está ejecutando)
         self._radio_timed.setEnabled(not running)
         self._radio_cont.setEnabled(not running)
+        self._combo_planes.setEnabled(not running)
         self._scan_time.setEnabled(not running and not is_standalone)
         self._lbl_scan_time.setEnabled(not is_standalone)
         self._btn_show_traj.setEnabled(False)
@@ -1345,7 +1374,7 @@ class AcquisitionTab(QWidget):
         self._log_write(f"[INFO] Running HitAnalysis on {Path(root_path).name}...")
         self._last_tracks = None
 
-        worker = HitAnalysisWorker(root_path)
+        worker = HitAnalysisWorker(root_path, min_planes=self._min_planes)
         self._retire_thread(self._timed_hit_thread)
         self._timed_hit_worker = worker
         self._timed_hit_thread = QThread()
